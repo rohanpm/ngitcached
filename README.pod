@@ -44,11 +44,6 @@ https://launchpad.net/~chris-lea/+archive/node.js
 
 Other platforms: packages have not yet been prepared.
 
-=pod
-
-
-=cut
-The below section is generated automatically!
 =head1 Manual
 
 =head2 NAME

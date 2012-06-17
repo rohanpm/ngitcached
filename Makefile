@@ -36,7 +36,7 @@ docs: README.pod ngitcached.1
 README.pod: src/ngitcached Makefile
 	{ \
 	    podselect -sections '!Manual' README.pod; \
-	    echo '\n=cut\nThe below section is generated automatically!\n=head1 Manual\n'; \
+	    echo '=head1 Manual\n'; \
 	    podselect src/ngitcached | sed -r \
 		-e 's|^=head3|=head4|' \
 		-e 's|^=head2|=head3|' \
