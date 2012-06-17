@@ -1,5 +1,5 @@
-ngitcached (0-git1) unstable; urgency=low
+ngitcached (1) UNRELEASED; urgency=low
 
   * Initial release
 
- -- Rohan McGovern <rohan@mcgovern.id.au>  Sat, 24 Mar 2012 13:56:35 +1000
+ -- Rohan McGovern <rohan@mcgovern.id.au>  Sun, 17 Jun 2012 12:36:49 +1000
