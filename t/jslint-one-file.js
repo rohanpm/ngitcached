@@ -70,7 +70,8 @@ fs.readFile(filename, 'utf-8', function (err, data) {
       eqeq: 1,          // allow == and !=
       'continue': 1,    // allow continue
       'regexp': 1,      // allow . in regex
-      nomen: 1          // allow _ at begin/end of variable names
+      nomen: 1,         // allow _ at begin/end of variable names
+      white: 1          // no whitespace enforcement
     }
   );
   if (succeeded) {

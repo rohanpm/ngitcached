@@ -25,6 +25,7 @@
 "use strict";
 
 var node = {
+  fs: require('fs'),
   net: require('net'),
   url: require('url'),
   util: require('util'),
@@ -105,25 +106,6 @@ GitProxyConnection.prototype.onClientSocketError = function (ex) {
   mylog.log(1, "client socket error: '" + ex + "', dropping connection");
   this.client.stream.destroy();
   this.server.stream.destroy();
-};
-
-GitProxyConnection.prototype.connectionId = function () {
-  var client_socket, connection_id;
-
-  client_socket = this.client.stream.socket();
-  connection_id = client_socket.remoteAddress + ':' + client_socket.remotePort;
-
-  if (this.server && this.server.host) {
-    connection_id = node.util.format(
-      '%s <-> %s:%d%s',
-      connection_id,
-      this.server.host,
-      this.server.port,
-      this.server.repo
-    );
-  }
-
-  return '[' + connection_id + ']';
 };
 
 GitProxyConnection.prototype.handleClientChunk1 = function (message, cb) {
@@ -452,19 +434,22 @@ GitProxyConnection.prototype.writeServerHave = function (cb) {
 /*
   Do git index-pack - the process which receives the git data from server
   and stores it in the cache.
+  cb: function (error)
 */
 GitProxyConnection.prototype.doLocalIndexPack = function (cb) {
 
   var gitproxy = this,
     git_index_pack,
     index_pack_stderr_remaining,
-    prefix;
+    prefix,
+    client_socket = this.client.stream.socket(),
+    conn_id = this.connectionId();
 
   mylog.log(2, 'spawning git index-pack');
 
   git_index_pack = node.child_process.spawn(
     'git',
-    [ 'index-pack', '-v', '--stdin', '--keep' ]
+    [ 'index-pack', '-v', '--stdin', '--keep='+conn_id ]
   );
   git_index_pack.stdin.on('error', function (error) {
     return cb.call(this,
@@ -507,7 +492,7 @@ GitProxyConnection.prototype.doLocalIndexPack = function (cb) {
 
   git_index_pack.on('exit', function () {
     gitproxy.server.stream.destroySoon();
-    return cb.call(this);
+    return cb.call(this, undefined);
   });
 
   this.server.stream.on('sideband1', function (message) {
@@ -537,12 +522,38 @@ GitProxyConnection.prototype.doLocalIndexPack = function (cb) {
 };
 
 /*
+  Returns a unique ID for this connection, safe for usage in filenames
+*/
+GitProxyConnection.prototype.connectionId = function () {
+  var client_socket = this.client.stream.socket();
+  return client_socket.remoteAddress + '-' + client_socket.remotePort;
+};
+
+GitProxyConnection.prototype.connectionLabel = function () {
+  var client_socket, connection_id;
+
+  client_socket = this.client.stream.socket();
+  connection_id = client_socket.remoteAddress + ':' + client_socket.remotePort;
+
+  if (this.server && this.server.host) {
+    connection_id = node.util.format(
+      '%s <-> %s:%d%s',
+      connection_id,
+      this.server.host,
+      this.server.port,
+      this.server.repo
+    );
+  }
+
+  return '[' + connection_id + ']';
+};
+
+/*
   Update persistent and in-progress refs (for a request in progress)
 */
 GitProxyConnection.prototype.updateRefs = function (cb) {
   var gitproxy = this,
-    client_socket = this.client.stream.socket(),
-    client_id = client_socket.remoteAddress + '-' + client_socket.remotePort,
+    client_id = this.connectionId(),
     cmd,
     i,
     pq = new ProcessQueue(),
@@ -578,19 +589,8 @@ GitProxyConnection.prototype.updateRefs = function (cb) {
 };
 
 
-GitProxyConnection.prototype.cleanup = function () {
-  var client_socket = this.client.stream.socket(),
-    client_id = client_socket.remoteAddress + '-' + client_socket.remotePort;
-
-  node.child_process.spawn(
-    'rm',
-    ['-rf', '.git/refs/in-progress/' + client_id]
-  );
-};
-
 /*
-  Do the git upload-pack from proxy to client;
-  this is the last step.
+  Do the git upload-pack from proxy to client
 */
 GitProxyConnection.prototype.doLocalUploadPack = function (cb) {
   var gitproxy = this,
@@ -618,7 +618,6 @@ GitProxyConnection.prototype.doLocalUploadPack = function (cb) {
   git_upload_pack.on('exit', function () {
     mylog.log(2, 'git-upload-pack finished!');
     gitproxy.client.stream.destroySoon();
-    gitproxy.cleanup();
     cb.call(gitproxy, undefined);
   });
 
@@ -688,11 +687,23 @@ GitProxyConnection.prototype.fatalError = function (message) {
 function gitProxyStateObject(fire) {
   var conn,
     conn_id,
+    conn_label,
+    client_id,
     dumpInfo,
-    out = {};
+    warn,
+    pack_dir = 'objects/pack',
+    out = {},
+    count = 0;
+
+  // FIXME: much of the time, fire.$event() silently does not work.
+  // The reason is unclear.
+  // fire.$cb() works, so we use that instead.
 
   dumpInfo = function (text) {
-    mylog.log(0, '  ', conn_id, text);
+    mylog.log(0, '  ', conn_label, text);
+  };
+  warn = function (text) {
+    mylog.log(0, '  ', conn_label, 'Warning:', text);
   };
 
   out.defaults = {
@@ -714,6 +725,7 @@ function gitProxyStateObject(fire) {
       entry: function (c) {
         conn = new GitProxyConnection(c);
         conn_id = conn.connectionId();
+        conn_label = conn.connectionLabel();
         fire.$addToLibrary('conn', conn);
         fire.$regEmitter('clientStream', conn.client.stream, true);
       },
@@ -729,8 +741,8 @@ function gitProxyStateObject(fire) {
 
     ConnectingToServer: {
       entry: function () {
-        // conn_id is updated because server is now known
-        conn_id = conn.connectionId();
+        // conn_label is updated because server is now known
+        conn_label = conn.connectionLabel();
         fire.conn.startUploadPack();
       },
       actions: {
@@ -835,8 +847,100 @@ function gitProxyStateObject(fire) {
       },
       actions: {
         'api.dumpInfo': _.bind(dumpInfo, undefined, 'updating refs on proxy'),
-        'conn.doLocalUploadPack.done': 'Completed',
-        'clientStream.message': '@ignore'
+        'conn.doLocalUploadPack.done': 'WaitingClientClose',
+        'clientStream.message': '@ignore',
+        'clientStream.close': '@defer'
+      }
+    },
+
+    WaitingClientClose: {
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'waiting for client to close connection'),
+        'clientStream.close': 'CleaningKeepFiles'
+      }
+    },
+
+    CleaningKeepFiles: {
+      entry: function () {
+        fire.fs.readdir(pack_dir);
+        count = 0;
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'cleaning up .keep files'),
+
+        'fs.readdir.done': function (files) {
+          var that = this;
+          files = _.filter(files, function (file) {
+            return file.match(/.keep$/);
+          });
+          files = _.map(files, function(f) {
+            return pack_dir + '/' + f;
+          });
+          count = files ? files.length : 0;
+          _.each(files, function(filename) {
+            node.fs.readFile(filename, function (error, data) {
+              if (error) {
+                return fire.$cb('.err').call(this, error);
+              }
+              return fire.$cb('readFile.done').call(this, filename, data);
+            });
+          });
+
+          fire.$cb('checkCounts').call(this);
+        },
+
+        'readFile.done': function (filename, data) {
+          --count;
+          if (data == conn_id + '\n') {
+            ++count;
+            fire.fs.unlink(filename);
+          }
+          fire.$cb('checkCounts').call(this);
+        },
+
+        'fs.unlink.done': function () {
+          --count;
+          fire.$cb('checkCounts').call(this);
+        },
+
+        'checkCounts': function () {
+          if (!count) {
+            return 'CleaningRefs';
+          }
+        },
+
+        '.err': function (error) {
+          warn(
+            'Problem cleaning up .keep files: ' + error + "\n" +
+            'Some stale files may be left behind.'
+          );
+          return 'CleaningRefs';
+        }
+
+      }
+    },
+
+    CleaningRefs: {
+      entry: function () {
+        fire.remove.removeAsync('refs/in-progress/' + conn_id);
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'cleaning up refs'),
+        'remove.removeAsync.done': function () {
+          // after removing that subdirectory, try to remove in-progress
+          // as well.  This will succeed iff there are no other ongoing
+          // connections.
+          fire.fs.rmdir('refs/in-progress');
+        },
+        'remove.removeAsync.err': function (error) {
+          warn(
+            'Error removing in-progress refs: ' + error
+          );
+          return 'Completed';
+        },
+
+        'fs.rmdir.err': 'Completed',
+        'fs.rmdir.done': 'Completed'
       }
     },
 
@@ -850,10 +954,7 @@ function gitProxyStateObject(fire) {
       actions: {
         'api.dumpInfo': _.bind(dumpInfo, undefined, '(finished)'),
         'exit': '@exit'
-      },
-      ignore: [
-        'clientStream.close'
-      ]
+      }
     }
 
   };
@@ -876,7 +977,10 @@ function makeNewGitProxyFactory() {
 
   return new ignite.Factory(
     gitProxyStateObject,
-    undefined,
+    {
+      fs: node.fs,
+      remove: _.extend({}, require('remove'))
+    },
     {
       // strict mode is nice for testing, but impractical otherwise, since
       // events could potentially be added in new node.js versions without

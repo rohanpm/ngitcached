@@ -20,5 +20,14 @@ git clone --quiet git://127.0.0.1:10231/?remote=127.0.0.1:10232%TEMPDIR%/repo1 r
 cd repo2
 [ $(git rev-parse HEAD) = $COMMIT1 ]
 
+# Give the server a little bit of time for cleanup
+sleep 2
+
+# Should not be any .keep files
+[ x$(find %TEMPDIR%/cache/ -name '*.keep') = x ]
+
+# Should not be any in-progress refs
+( ! test -d %TEMPDIR%/cache/refs/in-progress )
+
 stop_ngitcached
 out0: Exiting gracefully due to signal.
