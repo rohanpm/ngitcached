@@ -232,6 +232,14 @@ GitProxyConnection.prototype.startUploadPack = function (cb) {
 };
 
 
+GitProxyConnection.prototype.supportedCapabilities = function () {
+  return [
+    'thin-pack',
+    'no-progress',
+    'side-band',
+    'side-band-64k'
+  ];
+};
 
 GitProxyConnection.prototype.readServerPreamble = function (message, cb) {
   var gitproxy = this,
@@ -239,7 +247,8 @@ GitProxyConnection.prototype.readServerPreamble = function (message, cb) {
     ref,
     sha,
     send_to_client = message.msgdata,
-    split;
+    split,
+    supported_caps;
 
   // End of preamble?
   if (message.length == 0) {
@@ -255,9 +264,23 @@ GitProxyConnection.prototype.readServerPreamble = function (message, cb) {
   // First message will have included the capabilities, separated by \n
   split = message.split('\x00');
   if (split.length == 2) {
-    send_to_client = message + '\n';
     this.server.caps = split[1].split(' ');
     message = myutil.chomp(split[0]);
+
+    supported_caps = _.intersection(
+      this.server.caps,
+      this.supportedCapabilities()
+    );
+
+    mylog.log(2, 'server caps: ' + this.server.caps);
+    mylog.log(2, 'supported subset: ' + supported_caps);
+
+    send_to_client =
+      message +
+      '\x00' +
+      supported_caps.join(' ') +
+      '\n'
+    ;
   }
 
   // Expected:
@@ -286,7 +309,8 @@ GitProxyConnection.prototype.readClientWant = function (message, cb) {
     cmd,
     matches,
     revlistPq,
-    sha;
+    sha,
+    missing_caps;
 
   if (message.length == 0) {
     // All wants are known.
@@ -317,6 +341,17 @@ GitProxyConnection.prototype.readClientWant = function (message, cb) {
     cap = matches[2].split(' ');
     mylog.log(2, 'client wants caps ' + cap);
     this.client.caps = cap;
+    missing_caps = _.difference(cap, this.supportedCapabilities());
+    if (missing_caps.length) {
+      return cb.call(
+        this,
+        'client requested capabilities: [' +
+        cap.join('] [') +
+        '], but we do not support: [' +
+        missing_caps.join('] [') +
+        ']'
+      );
+    }
   }
 
   this.client.want[sha] = 1;
@@ -877,6 +912,9 @@ function gitProxyStateObject(fire) {
       actions: {
         'api.dumpInfo': _.bind(dumpInfo, undefined, 'updating refs on proxy'),
         'conn.doLocalUploadPack.done': 'WaitingClientClose',
+        'conn.doLocalUploadPack.err': function (ex) {
+          return ['@error', 'while updating refs on proxy: ' + ex];
+        },
         'clientStream.message': '@ignore',
         'clientStream.close': '@defer'
       }
