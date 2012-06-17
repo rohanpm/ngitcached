@@ -539,7 +539,8 @@ GitProxy.prototype.updateRefs = function () {
       refs.push('refs/in-progress/' + client_id + '/' + server_ref);
 
       persistent_ref = 'refs/persistent/' + this.server.host + '/' + this.server.repo + '/' + server_ref;
-      persistent_ref.replace(/[^A-Za-z0-9\/\-_\.]/, '-');
+      persistent_ref = persistent_ref.replace(/[^A-Za-z0-9\/\-_\.]/g, '-');
+      persistent_ref = persistent_ref.replace(/\/+/g, '/');
       refs.push(persistent_ref);
 
       for (i = 0; i < refs.length; ++i) {
