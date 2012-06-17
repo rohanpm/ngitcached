@@ -43,6 +43,14 @@ var ProcessQueue = require('./processqueue.js').ProcessQueue;
 
 var GIT_PORT = 9418;
 
+var CACHE_HOT = 1,
+  CACHE_COLD = 2,
+  CACHE_WARM = 3,
+  CACHE_NO_OBJECTS_REQUESTED = 4;
+
+var REASON_EXIT = 1,
+  REASON_ERROR = 2;
+
 /* ====================== GitProxyConnection ============================== */
 
 function GitProxyConnection(client) {
@@ -364,19 +372,20 @@ GitProxyConnection.prototype.writeServerWant = function (cb) {
   return cb.call(this, undefined, count);
 };
 
-GitProxyConnection.prototype.endWriteServerHave = function (cb) {
+GitProxyConnection.prototype.endWriteServerHave = function (cb, have_count) {
   this.server.stream.writeMessage(new Buffer('done\n'));
-  return cb.call(this, undefined);
+  return cb.call(this, undefined, have_count);
 };
 
 /*
   Write haves to server.
-  cb: function (error)
+  cb: function (error, have_count)
 */
 GitProxyConnection.prototype.writeServerHave = function (cb) {
   var gitproxy = this,
     read_message,
-    rev_list;
+    rev_list,
+    have_count = 0;
 
   /*
     Currently, this supports only the most basic protocol,
@@ -398,6 +407,7 @@ GitProxyConnection.prototype.writeServerHave = function (cb) {
       }
       have_line = new Buffer('have ' + lines[i] + '\n');
       gitproxy.server.stream.writeMessage(have_line);
+      ++have_count;
     }
   });
 
@@ -406,7 +416,7 @@ GitProxyConnection.prototype.writeServerHave = function (cb) {
   });
 
   rev_list.on('exit', function () {
-    gitproxy.endWriteServerHave(cb);
+    gitproxy.endWriteServerHave(cb, have_count);
   });
 
   read_message = function (m) {
@@ -693,7 +703,8 @@ function gitProxyStateObject(fire) {
     warn,
     pack_dir = 'objects/pack',
     out = {},
-    count = 0;
+    count = 0,
+    cache_stat = CACHE_NO_OBJECTS_REQUESTED;
 
   // FIXME: much of the time, fire.$event() silently does not work.
   // The reason is unclear.
@@ -749,7 +760,7 @@ function gitProxyStateObject(fire) {
         'api.dumpInfo': _.bind(dumpInfo, undefined, 'connecting to server'),
         'conn.startUploadPack.err': function (ex) {
           conn.fatalError('fatal error while connecting to server: ' + ex);
-          return '@exit';
+          return '@error';
         },
         'conn.startUploadPack.done': function (stream) {
           return ['ReadingServerPreamble', stream];
@@ -785,6 +796,7 @@ function gitProxyStateObject(fire) {
 
     WritingServerWant: {
       entry: function () {
+        cache_stat = CACHE_COLD;
         fire.conn.writeServerWant();
       },
       actions: {
@@ -793,6 +805,7 @@ function gitProxyStateObject(fire) {
           // No want?  Then drop server connection, skip straight to UpdateRefs.
           // This is an entirely hot request (100% from cache)
           if (count == 0) {
+            cache_stat = CACHE_HOT;
             conn.server.stream.destroy();
             return 'UpdatingProxyRefs';
           }
@@ -808,7 +821,12 @@ function gitProxyStateObject(fire) {
       },
       actions: {
         'api.dumpInfo': _.bind(dumpInfo, undefined, 'negotiating HAVEs with server'),
-        'conn.writeServerHave.done': 'ReceivingServerPack'
+        'conn.writeServerHave.done': function (have_count) {
+          if (have_count) {
+            cache_stat = CACHE_WARM;
+          }
+          return 'ReceivingServerPack';
+        }
       }
     },
 
@@ -953,7 +971,9 @@ function gitProxyStateObject(fire) {
       },
       actions: {
         'api.dumpInfo': _.bind(dumpInfo, undefined, '(finished)'),
-        'exit': '@exit'
+        'exit': function () {
+          return ['@exit', cache_stat];
+        }
       }
     }
 
@@ -995,6 +1015,16 @@ function makeNewGitProxyFactory() {
 
 function GitProxy() {
   this.factory = makeNewGitProxyFactory();
+  this.stats = {
+    completed: 0,
+    in_progress: 0,
+    successful: 0,
+    error: 0,
+    hot: 0,
+    warm: 0,
+    cold: 0,
+    no_objects: 0,
+  };
 }
 
 GitProxy.prototype = {};
@@ -1002,16 +1032,63 @@ GitProxy.prototype.constructor = GitProxy;
 
 GitProxy.prototype.handleConnect = function (c) {
   var sm = this.factory.spawn(c);
-  sm.on('error', function () {
-    throw _.toArray(arguments);
-  });
+  this.recordConnectionInProgress();
+  sm.on('error', _.bind(this.recordConnectionComplete, this, REASON_ERROR));
+  sm.on('exit', _.bind(this.recordConnectionComplete, this, REASON_EXIT));
 };
 
+GitProxy.prototype.recordConnectionInProgress = function () {
+  ++this.stats.in_progress;
+};
+
+GitProxy.prototype.recordConnectionComplete = function (reason, warmth) {
+  --this.stats.in_progress;
+  ++this.stats.completed;
+  if (reason == REASON_ERROR) {
+    ++this.stats.error;
+    return;
+  }
+  ++this.stats.successful;
+  if (warmth == CACHE_HOT) {
+    ++this.stats.hot;
+  } else if (warmth == CACHE_WARM) {
+    ++this.stats.warm;
+  } else if (warmth == CACHE_COLD) {
+    ++this.stats.cold;
+  } else {
+    ++this.stats.no_objects;
+  }
+};
+
+GitProxy.prototype.dumpStats = function () {
+  var out = node.util.format(
+    "========================== Connection statistics: =====================\n"
+   +" In progress:              %d\n"
+   +" Completed (successful):   %d\n"
+   +" Completed (with error):   %d\n"
+   +" Hot requests:             %d\n"
+   +" Warm requests:            %d\n"
+   +" Cold requests:            %d\n"
+   +" Requests with no objects: %d",
+    this.stats.in_progress,
+    this.stats.successful,
+    this.stats.error,
+    this.stats.hot,
+    this.stats.warm,
+    this.stats.cold,
+    this.stats.no_objects
+  );
+  mylog.log(0, out);
+}
+
 GitProxy.prototype.dumpInfo = function () {
+  mylog.log(0, "\n\nngitcached v" + process.env.NGITCACHED_VERSION);
+  this.dumpStats();
+  if (!this.stats.in_progress) {
+    return;
+  }
   mylog.log(0,
-    "ngitcached v"
-   +process.env.NGITCACHED_VERSION
-   +"\nConnections:"
+    '========================== Current Connections: ======================='
   );
   this.factory.broadcast('api.dumpInfo');
 };
