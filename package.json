@@ -1,0 +1,8 @@
+{
+    "name": "ngitcached",
+    "version": "0.0.0-git",
+    "dependencies": {
+        "ignite": "0.1.5",
+        "underscore": "1.3"
+    }
+}

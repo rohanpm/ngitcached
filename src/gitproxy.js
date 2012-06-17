@@ -32,6 +32,9 @@ var node = {
   child_process: require('child_process')
 };
 
+var _ = require('underscore');
+var ignite = require('ignite');
+
 var myutil = require('./util.js');
 var mylog = require('./log.js');
 var GitStream = require('./gitstream.js').GitStream;
@@ -39,7 +42,9 @@ var ProcessQueue = require('./processqueue.js').ProcessQueue;
 
 var GIT_PORT = 9418;
 
-function GitProxy(client) {
+/* ====================== GitProxyConnection ============================== */
+
+function GitProxyConnection(client) {
   this.client = {
     stream: new GitStream(client),
     want: {}
@@ -62,8 +67,8 @@ function GitProxy(client) {
   });
 }
 
-GitProxy.prototype = new node.events.EventEmitter();
-GitProxy.prototype.constructor = GitProxy;
+GitProxyConnection.prototype = new node.events.EventEmitter();
+GitProxyConnection.prototype.constructor = GitProxyConnection;
 
 /*
   Example simple session:
@@ -96,13 +101,32 @@ GitProxy.prototype.constructor = GitProxy;
       (with haves still pending) to the proxy's upload-pack.
 */
 
-GitProxy.prototype.onClientSocketError = function (ex) {
+GitProxyConnection.prototype.onClientSocketError = function (ex) {
   mylog.log(1, "client socket error: '" + ex + "', dropping connection");
   this.client.stream.destroy();
   this.server.stream.destroy();
 };
 
-GitProxy.prototype.handleClientChunk1 = function (message) {
+GitProxyConnection.prototype.connectionId = function () {
+  var client_socket, connection_id;
+
+  client_socket = this.client.stream.socket();
+  connection_id = client_socket.remoteAddress + ':' + client_socket.remotePort;
+
+  if (this.server && this.server.host) {
+    connection_id = node.util.format(
+      '%s <-> %s:%d%s',
+      connection_id,
+      this.server.host,
+      this.server.port,
+      this.server.repo
+    );
+  }
+
+  return '[' + connection_id + ']';
+};
+
+GitProxyConnection.prototype.handleClientChunk1 = function (message, cb) {
   var chunk,
     chunks,
     data,
@@ -114,10 +138,7 @@ GitProxy.prototype.handleClientChunk1 = function (message) {
     split_host,
     split_remote;
 
-  mylog.log(2, "First line of git data is: " + node.util.inspect(message));
   message = message.msgdata;
-
-  mylog.log(2, 'Message: ' + message);
 
   chunks = message.toString().split('\x00');
   mylog.log(2, node.util.inspect(chunks));
@@ -130,7 +151,7 @@ GitProxy.prototype.handleClientChunk1 = function (message) {
   prefix = 'git-upload-pack ';
   repo = chunks.shift();
   if (repo.indexOf(prefix) != 0) {
-    mylog.log(1, 'Malformed message ' + message);
+    cb.call(this, 'Malformed message ' + message);
     return;
   }
   repo = repo.slice(prefix.length);
@@ -144,7 +165,8 @@ GitProxy.prototype.handleClientChunk1 = function (message) {
     }
     keyvalue = chunk.split('=');
     if (keyvalue.length != 2) {
-      mylog.log(1, 'Malformed message ' + message);
+      cb.call(this, 'Malformed message ' + message);
+      return;
     }
     data[keyvalue[0]] = keyvalue[1];
   }
@@ -158,7 +180,7 @@ GitProxy.prototype.handleClientChunk1 = function (message) {
     host = data.host;
   }
   if (host == undefined) {
-    this.fatalError('remote host unknown!');
+    cb.call(this, 'remote host unknown!');
     return;
   }
 
@@ -174,11 +196,15 @@ GitProxy.prototype.handleClientChunk1 = function (message) {
   mylog.log(2, 'proxy to host: ' + host);
   mylog.log(2, 'proxy to repo: ' + repo);
 
-  this.startUploadPack();
+  cb.call(this);
 };
 
 
-GitProxy.prototype.startUploadPack = function () {
+/*
+  Start upload-pack from proxy to server.
+  cb: function (error, server_stream)
+*/
+GitProxyConnection.prototype.startUploadPack = function (cb) {
   var connect,
     gitproxy = this,
     on_connected;
@@ -192,13 +218,11 @@ GitProxy.prototype.startUploadPack = function () {
       'git-upload-pack ' + gitproxy.server.repo + '\x00host='
         + gitproxy.server.host + '\x00'
     ));
-    gitproxy.server.stream.once('message', function (m) {
-      gitproxy.readServerPreamble(m);
-    });
+    cb.call(this, undefined, gitproxy.server.stream);
   };
 
-  connect = function (cb) {
-    return node.net.connect(gitproxy.server.port, gitproxy.server.host, cb);
+  connect = function (cb2) {
+    return node.net.connect(gitproxy.server.port, gitproxy.server.host, cb2);
   };
 
   myutil.robustly({
@@ -209,6 +233,9 @@ GitProxy.prototype.startUploadPack = function () {
     fn_on_error: function (ex) {
       mylog.log(2, 'gitstream connect error: ' + ex);
       return 2;
+    },
+    fn_on_give_up: function (ctx, ex) {
+      cb.call(this, ex);
     }
   });
 
@@ -216,7 +243,7 @@ GitProxy.prototype.startUploadPack = function () {
 
 
 
-GitProxy.prototype.readServerPreamble = function (message) {
+GitProxyConnection.prototype.readServerPreamble = function (message, cb) {
   var gitproxy = this,
     matches,
     ref,
@@ -226,12 +253,7 @@ GitProxy.prototype.readServerPreamble = function (message) {
 
   // End of preamble?
   if (message.length == 0) {
-    this.client.stream.writeFlush();
-    this.client.stream.removeAllListeners('message');
-    this.client.stream.once('message', function (m) {
-      gitproxy.startReadClientWant(m);
-    });
-    return;
+    return cb.call(this, undefined, cb);
   }
 
   // Strip trailing \n if any
@@ -252,8 +274,7 @@ GitProxy.prototype.readServerPreamble = function (message) {
   //  <SHA1> <ref>
   matches = message.match(/^([a-f0-9]{40}) (.+)$/i);
   if (matches == null || matches.length != 3) {
-    this.fatalError("expected sha/ref, got '" + message + "')");
-    return;
+    return cb.call(this, "expected sha/ref, got '" + message + "')");
   }
 
   ref = matches[2];
@@ -263,19 +284,13 @@ GitProxy.prototype.readServerPreamble = function (message) {
   this.server.refs_by_order.push({ ref: ref, sha: sha });
 
   this.client.stream.writeMessage(new Buffer(send_to_client));
-
-  this.server.stream.once('message', function (m) {
-    gitproxy.readServerPreamble(m);
-  });
 };
 
-GitProxy.prototype.startReadClientWant = function (message) {
-  this.readingWants = true;
-  this.revlistPq = new ProcessQueue();
-  return this.readClientWant(message);
-};
-
-GitProxy.prototype.readClientWant = function (message) {
+/*
+  Read a WANT message from client.
+  cb: function (error)
+*/
+GitProxyConnection.prototype.readClientWant = function (message, cb) {
   var gitproxy = this,
     cap,
     cmd,
@@ -288,13 +303,12 @@ GitProxy.prototype.readClientWant = function (message) {
     revlistPq = this.revlistPq;
     delete this.revlistPq;
 
-    this.readingWants = false;
     if (revlistPq.empty()) {
-      return this.writeServerWant();
+      return cb.call(this, undefined);
     }
     this.client.stream.pause();
     return revlistPq.once('emptied', function () {
-      gitproxy.writeServerWant();
+      return cb.call(this, undefined);
     });
   }
 
@@ -305,7 +319,7 @@ GitProxy.prototype.readClientWant = function (message) {
 
   matches = message.match(/^want ([a-f0-9]{40})(?: (.+))?$/i);
   if (!matches || (matches.length != 2 && matches.length != 3)) {
-    return this.fatalError("expected 'want <sha1>', got '" + message + "'");
+    return cb.call(this, "expected 'want <sha1>', got '" + message + "'");
   }
 
   sha = matches[1];
@@ -324,6 +338,10 @@ GitProxy.prototype.readClientWant = function (message) {
   cmd = 'git rev-list --no-walk ' + sha;
   mylog.log(2, 'run: ' + cmd);
 
+  if (!gitproxy.revlistPq) {
+    gitproxy.revlistPq = new ProcessQueue();
+  }
+
   (function () {
     var this_sha = sha;
     gitproxy.revlistPq.exec(
@@ -339,46 +357,43 @@ GitProxy.prototype.readClientWant = function (message) {
       }
     );
   }());
-
-  this.client.stream.once('message', function (m) {
-    gitproxy.readClientWant(m);
-  });
 };
 
-GitProxy.prototype.writeServerWant = function () {
+/*
+  Write appropriate WANT to server.
+
+  cb: function (error, want_wrote_count)
+*/
+GitProxyConnection.prototype.writeServerWant = function (cb) {
   // TODO: proper capability handling
   var postfix = ' side-band side-band-64k',
     sha,
-    wrote_want = false;
+    count = 0;
 
   for (sha in this.want) {
     if (this.want.hasOwnProperty(sha)) {
       this.server.stream.writeMessage(new Buffer('want ' + sha + postfix + '\n'));
       postfix = '';
-      wrote_want = true;
+      ++count;
     }
   }
   this.server.stream.writeFlush();
 
-  if (!wrote_want) {
-    this.server.stream.destroySoon();
-    return this.updateRefs();
-  }
-
-  this.writeServerHave();
+  return cb.call(this, undefined, count);
 };
 
-GitProxy.prototype.endWriteServerHave = function () {
-  if (this.endedWriteServerHave) {
-    return;
-  }
-  this.endedWriteServerHave = true;
+GitProxyConnection.prototype.endWriteServerHave = function (cb) {
   this.server.stream.writeMessage(new Buffer('done\n'));
-  return this.doLocalIndexPack();
+  return cb.call(this, undefined);
 };
 
-GitProxy.prototype.writeServerHave = function () {
+/*
+  Write haves to server.
+  cb: function (error)
+*/
+GitProxyConnection.prototype.writeServerHave = function (cb) {
   var gitproxy = this,
+    read_message,
     rev_list;
 
   /*
@@ -409,33 +424,36 @@ GitProxy.prototype.writeServerHave = function () {
   });
 
   rev_list.on('exit', function () {
-    gitproxy.server.stream.removeAllListeners('message');
-    gitproxy.endWriteServerHave();
+    gitproxy.endWriteServerHave(cb);
   });
 
-  this.server.stream.on('message', function (m) {
+  read_message = function (m) {
     var matches,
       str = m.msgdata.toString();
 
     if (str == 'NAK\n') {
       // NAK: no common object found, keep going.
+      gitproxy.server.stream.once('message', read_message);
       return;
     }
 
     // Should be an ACK
     matches = str.match(/^ACK ([0-9a-fA-F]{40})\n$/);
     if (!matches || matches.length != 2) {
-      return gitproxy.fatalError('Expected ACK or NAK, got: ' + str);
+      return cb.call(gitproxy, 'Expected ACK or NAK, got: ' + str);
     }
     mylog.log(2, 'server acked ' + matches[1]);
-    gitproxy.server.stream.removeAllListeners('message');
-    rev_list.removeAllListeners('exit');
+    rev_list.removeAllListeners('stdout');
     rev_list.kill();
-    return gitproxy.endWriteServerHave();
-  });
+  };
+  this.server.stream.once('message', read_message);
 };
 
-GitProxy.prototype.doLocalIndexPack = function () {
+/*
+  Do git index-pack - the process which receives the git data from server
+  and stores it in the cache.
+*/
+GitProxyConnection.prototype.doLocalIndexPack = function (cb) {
 
   var gitproxy = this,
     git_index_pack,
@@ -449,10 +467,9 @@ GitProxy.prototype.doLocalIndexPack = function () {
     [ 'index-pack', '-v', '--stdin', '--keep' ]
   );
   git_index_pack.stdin.on('error', function (error) {
-    gitproxy.fatalError(
+    return cb.call(this,
       'write to git index-pack: ' + error + "\nStandard error:\n"
-        + gitproxy.indexPackStderr
-    );
+        + gitproxy.indexPackStderr);
   });
 
   this.sidebandTwoFromServerToClient = [];
@@ -490,7 +507,7 @@ GitProxy.prototype.doLocalIndexPack = function () {
 
   git_index_pack.on('exit', function () {
     gitproxy.server.stream.destroySoon();
-    gitproxy.updateRefs();
+    return cb.call(this);
   });
 
   this.server.stream.on('sideband1', function (message) {
@@ -519,7 +536,10 @@ GitProxy.prototype.doLocalIndexPack = function () {
   });
 };
 
-GitProxy.prototype.updateRefs = function () {
+/*
+  Update persistent and in-progress refs (for a request in progress)
+*/
+GitProxyConnection.prototype.updateRefs = function (cb) {
   var gitproxy = this,
     client_socket = this.client.stream.socket(),
     client_id = client_socket.remoteAddress + '-' + client_socket.remotePort,
@@ -546,20 +566,19 @@ GitProxy.prototype.updateRefs = function () {
       for (i = 0; i < refs.length; ++i) {
         ref = refs[i];
         cmd = 'git update-ref --no-deref ' + ref + ' ' + sha;
-        mylog.log(2, 'run: ' + cmd);
+        mylog.log(3, 'run: ' + cmd);
         pq.exec(cmd);
       }
     }
   }
 
-  mylog.log(2, 'waiting for child processes complete');
   pq.once('emptied', function () {
-    gitproxy.doLocalUploadPack();
+    return cb.call(gitproxy);
   });
 };
 
 
-GitProxy.prototype.cleanup = function () {
+GitProxyConnection.prototype.cleanup = function () {
   var client_socket = this.client.stream.socket(),
     client_id = client_socket.remoteAddress + '-' + client_socket.remotePort;
 
@@ -569,8 +588,11 @@ GitProxy.prototype.cleanup = function () {
   );
 };
 
-
-GitProxy.prototype.doLocalUploadPack = function () {
+/*
+  Do the git upload-pack from proxy to client;
+  this is the last step.
+*/
+GitProxyConnection.prototype.doLocalUploadPack = function (cb) {
   var gitproxy = this,
     git_upload_pack,
     stdout,
@@ -583,7 +605,7 @@ GitProxy.prototype.doLocalUploadPack = function () {
     [ 'upload-pack', '.' ]
   );
   git_upload_pack.stdin.on('error', function (error) {
-    gitproxy.fatalError('write to git upload-pack: ' + error);
+    cb.call(gitproxy, 'write to git upload-pack: ' + error);
   });
 
   stdout = new GitStream(git_upload_pack.stdout);
@@ -597,6 +619,7 @@ GitProxy.prototype.doLocalUploadPack = function () {
     mylog.log(2, 'git-upload-pack finished!');
     gitproxy.client.stream.destroySoon();
     gitproxy.cleanup();
+    cb.call(gitproxy, undefined);
   });
 
   stdin.on('error', function (e) {
@@ -653,7 +676,7 @@ GitProxy.prototype.doLocalUploadPack = function () {
 
 };
 
-GitProxy.prototype.fatalError = function (message) {
+GitProxyConnection.prototype.fatalError = function (message) {
   mylog.trace(1, 'fatal error: ' + message);
   try {
     this.client.stream.writeMessage(new Buffer('ERR ' + message));
@@ -661,17 +684,230 @@ GitProxy.prototype.fatalError = function (message) {
   }
 };
 
-/*
-  handleConnection is the entry-point to the proxy.
-  
-    c:  connection (net.Socket object)
+/* ================= STATE MACHINE DEFINITION ============================= */
+function gitProxyStateObject(fire) {
+  var conn,
+    conn_id,
+    dumpInfo,
+    out = {};
 
-*/
-exports.handleConnection = function (c) {
-  var proxy = new GitProxy(c);
-  proxy.client.stream.once('message', function (m) {
-    proxy.handleClientChunk1(m);
+  dumpInfo = function (text) {
+    mylog.log(0, '  ', conn_id, text);
+  };
+
+  out.defaults = {
+    ignore: [
+      'clientStream.flush',
+      'clientStream.newListener',
+      'serverStream.close',
+      'serverStream.flush',
+      'serverStream.newListener'
+    ],
+    actions: {
+      'api.dumpInfo': _.bind(dumpInfo, undefined, '(unknown state)')
+    }
+  };
+
+  out.states = {
+
+    AwaitingClientChunk1: {
+      entry: function (c) {
+        conn = new GitProxyConnection(c);
+        conn_id = conn.connectionId();
+        fire.$addToLibrary('conn', conn);
+        fire.$regEmitter('clientStream', conn.client.stream, true);
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'waiting for first data from client'),
+        'clientStream.message': function (m) {
+          fire.conn.handleClientChunk1(m);
+        },
+        'conn.handleClientChunk1.done': 'ConnectingToServer',
+        'conn.handleClientChunk1.err': 'FatalError'
+      }
+    },
+
+    ConnectingToServer: {
+      entry: function () {
+        // conn_id is updated because server is now known
+        conn_id = conn.connectionId();
+        fire.conn.startUploadPack();
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'connecting to server'),
+        'conn.startUploadPack.err': function (ex) {
+          conn.fatalError('fatal error while connecting to server: ' + ex);
+          return '@exit';
+        },
+        'conn.startUploadPack.done': function (stream) {
+          return ['ReadingServerPreamble', stream];
+        }
+      }
+    },
+
+    ReadingServerPreamble: {
+      entry: function (stream) {
+        fire.$regEmitter('serverStream', stream, true);
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'reading server preamble'),
+        'serverStream.message': function (m) {
+          fire.conn.readServerPreamble(m);
+        },
+        'conn.readServerPreamble.done': function () {
+          conn.client.stream.writeFlush();
+          return 'ReadingClientWant';
+        }
+      }
+    },
+
+    ReadingClientWant: {
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'reading client WANT'),
+        'clientStream.message': function (m) {
+          fire.conn.readClientWant(m);
+        },
+        'conn.readClientWant.done': 'WritingServerWant'
+      }
+    },
+
+    WritingServerWant: {
+      entry: function () {
+        fire.conn.writeServerWant();
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'writing server WANT'),
+        'conn.writeServerWant.done': function (count) {
+          // No want?  Then drop server connection, skip straight to UpdateRefs.
+          // This is an entirely hot request (100% from cache)
+          if (count == 0) {
+            conn.server.stream.destroy();
+            return 'UpdatingProxyRefs';
+          }
+
+          return 'WritingServerHave';
+        }
+      }
+    },
+
+    WritingServerHave: {
+      entry: function () {
+        fire.conn.writeServerHave();
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'negotiating HAVEs with server'),
+        'conn.writeServerHave.done': 'ReceivingServerPack'
+      }
+    },
+
+    ReceivingServerPack: {
+      entry: function () {
+        fire.conn.doLocalIndexPack();
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'receiving git objects from server'),
+        'conn.doLocalIndexPack.done': 'UpdatingProxyRefs',
+        // these are handled internally
+        'serverStream.message': '@ignore',
+        'serverStream.sideband1': '@ignore',
+        'serverStream.sideband2': '@ignore',
+        'serverStream.end': '@ignore',
+        'serverStream.close': '@ignore',
+        // FIXME! there is a left-over message somewhere.
+        'conn.writeServerHave.err': '@ignore',
+        'conn.writeServerHave.done': '@ignore'
+      }
+    },
+
+    UpdatingProxyRefs: {
+      entry: function () {
+        fire.conn.updateRefs();
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'updating refs on proxy'),
+        'conn.updateRefs.done': 'SendingPack'
+      }
+    },
+
+    SendingPack: {
+      entry: function () {
+        fire.conn.doLocalUploadPack();
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'updating refs on proxy'),
+        'conn.doLocalUploadPack.done': 'Completed',
+        'clientStream.message': '@ignore'
+      }
+    },
+
+    Completed: {
+      entry: function () {
+        // Instead of exiting immediately, insert an arbitrary delay,
+        // so we keep a temporary record of all recently closed
+        // connections.
+        setTimeout(fire.$cb('exit'), 10000);
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, '(finished)'),
+        'exit': '@exit'
+      },
+      ignore: [
+        'clientStream.close'
+      ]
+    }
+
+  };
+
+  out.startState = 'AwaitingClientChunk1';
+  out.api = ['dumpInfo'];
+
+  return out;
+}
+
+function makeNewGitProxyFactory() {
+  var igniteLogLevel = 0,
+    ngitcachedLogLevel = process.env.NGITCACHED_LOGLEVEL;
+
+  if (ngitcachedLogLevel > 2) {
+    igniteLogLevel = 8;
+  } else if (ngitcachedLogLevel > 1) {
+    igniteLogLevel = 4;
+  }
+
+  return new ignite.Factory(
+    gitProxyStateObject,
+    undefined,
+    {
+      // strict mode is nice for testing, but impractical otherwise, since
+      // events could potentially be added in new node.js versions without
+      // our knowledge
+      strict: process.env.NGITCACHED_TEST,
+      logLevel: igniteLogLevel
+    }
+  );
+}
+
+/* ============================= exports ================================= */
+
+function GitProxy() {
+  this.factory = makeNewGitProxyFactory();
+}
+
+GitProxy.prototype = {};
+GitProxy.prototype.constructor = GitProxy;
+
+GitProxy.prototype.handleConnect = function (c) {
+  var sm = this.factory.spawn(c);
+  sm.on('error', function () {
+    throw _.toArray(arguments);
   });
 };
+
+GitProxy.prototype.dumpInfo = function () {
+  mylog.log(0, "Connections:");
+  this.factory.broadcast('api.dumpInfo');
+};
+
+exports.GitProxy = GitProxy;
 
 // vim: expandtab:ts=2:sw=2

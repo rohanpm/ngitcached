@@ -1,5 +1,5 @@
 # Start git daemon and ngitcached ...
-start_ngitcached --port 10231
+start_ngitcached --port 10231 --test
 out0: Initialized empty Git repository in %TEMPDIR%/cache/
 out0: ngitcached listening on port 10231
 

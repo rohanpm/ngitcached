@@ -27,8 +27,12 @@
 var port = process.env.NGITCACHED_PORT;
 
 var net = require('net');
-var gitproxy = require('./gitproxy.js');
+var _ = require('underscore');
 var mylog = require('./log.js');
+
+var gitproxy = require('./gitproxy.js');
+gitproxy = new gitproxy.GitProxy();
+_.bindAll(gitproxy);
 
 var exitOnSignal = function () {
   mylog.log(0, 'Exiting gracefully due to signal.');
@@ -36,18 +40,20 @@ var exitOnSignal = function () {
 };
 process.on('SIGINT', exitOnSignal);
 process.on('SIGTERM', exitOnSignal);
+process.on('SIGHUP', gitproxy.dumpInfo);
 
-var server = net.createServer(function (c) {
-  return gitproxy.handleConnection(c);
-});
+var server = net.createServer(gitproxy.handleConnect);
 
 /*
     Avoid death on any uncaught exceptions.
     However, we aim to catch all exceptions, so this is always a bug.
+    In test mode, this is disabled, so we die as soon as an error occurs.
 */
-process.addListener('uncaughtException', function (err) {
-  mylog.trace(0, 'Uncaught exception (bug in ngitcached): ' + err);
-});
+if (!process.env.NGITCACHED_TEST) {
+  process.addListener('uncaughtException', function (err) {
+    mylog.trace(0, 'Uncaught exception (bug in ngitcached): ' + err);
+  });
+}
 
 server.listen(port, function () {
   mylog.log(0, 'ngitcached listening on port ' + port);

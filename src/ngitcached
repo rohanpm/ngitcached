@@ -130,6 +130,7 @@ sub main
 {
     my $node = 'node';
     my $port = 9418;
+    my $test = 0;
     my $loglevel = 0;
     my $cache_dir;
 
@@ -139,6 +140,7 @@ sub main
         'cache-dir=s'   =>  \$cache_dir,
         'port=i'        =>  \$port,
         'verbose'       =>  sub { ++$loglevel },
+        'test'          =>  \$test,
     ) || pod2usage(2);
 
     if (!$cache_dir) {
@@ -154,6 +156,7 @@ sub main
 
     local $ENV{ NGITCACHED_PORT } = $port;
     local $ENV{ NGITCACHED_LOGLEVEL } = $loglevel;
+    local $ENV{ NGITCACHED_TEST } = $test;
 
     my @MAIN_JS_CANDIDATES = (
         catfile( $FindBin::Bin, qw(.. libexec ngitcached main.js) ),    # installed case (redhat)
