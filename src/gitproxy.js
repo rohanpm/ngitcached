@@ -305,12 +305,13 @@ GitProxyConnection.prototype.readServerPreamble = function (message, cb) {
 */
 GitProxyConnection.prototype.readClientWant = function (message, cb) {
   var gitproxy = this,
-    cap,
     cmd,
     matches,
     revlistPq,
     sha,
-    missing_caps;
+    missing_caps,
+    message_parts,
+    first_part;
 
   if (message.length == 0) {
     // All wants are known.
@@ -330,23 +331,35 @@ GitProxyConnection.prototype.readClientWant = function (message, cb) {
   message = myutil.chomp(message);
   mylog.log(2, 'client message: ' + message);
   message = message.toString();
-
-  matches = message.match(/^want ([a-f0-9]{40})(?: (.+))?$/i);
-  if (!matches || (matches.length != 2 && matches.length != 3)) {
-    return cb.call(this, "expected 'want <sha1>', got '" + message + "'");
+  message_parts = message.split(' ');
+  first_part = message_parts.shift();
+  
+  if (first_part == 'shallow' || first_part == 'deepen') {
+    return cb.call(this, 'client attempted "' + first_part + '", which is not supported');
   }
 
-  sha = matches[1];
-  if (matches.length == 3 && matches[2]) {
-    cap = matches[2].split(' ');
-    mylog.log(2, 'client wants caps ' + cap);
-    this.client.caps = cap;
-    missing_caps = _.difference(cap, this.supportedCapabilities());
+  if (first_part != 'want') {
+    return cb.call(this, 'message from client not understood: ' + message);
+  }
+
+  sha = message_parts.shift();
+  if (!myutil.isSha1( sha )) {
+    return cb.call(this, 'malformed "want" from client: ' + message);
+  }
+
+  // Anything else is a requested capability
+  if (message_parts.length) {
+    this.client.caps = message_parts;
+    mylog.log(2, 'client wants caps ' + this.client.caps);
+    missing_caps = _.difference(
+      this.client.caps,
+      this.supportedCapabilities()
+    );
     if (missing_caps.length) {
       return cb.call(
         this,
         'client requested capabilities: [' +
-        cap.join('] [') +
+        this.client.caps.join('] [') +
         '], but we do not support: [' +
         missing_caps.join('] [') +
         ']'

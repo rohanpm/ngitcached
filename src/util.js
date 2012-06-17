@@ -112,4 +112,12 @@ exports.robustly = function (ctx) {
   return;
 };
 
+/*
+  Returns true iff maybe_sha (string) looks like a SHA1
+*/
+exports.isSha1 = function (maybe_sha) {
+  var matches = maybe_sha.match(/^[a-f0-9]{40}$/i);
+  return (matches != null && matches.length > 0);
+};
+
 // vim: expandtab:ts=2:sw=2
