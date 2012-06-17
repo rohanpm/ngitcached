@@ -1,0 +1,13 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+
+use FindBin;
+use File::Spec::Functions;
+
+use lib catfile( $FindBin::Bin, qw(.. lib) );
+
+use App::ngitcached;
+
+App::ngitcached->new( )->run( @ARGV );
+1;

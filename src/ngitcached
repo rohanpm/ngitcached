@@ -1,0 +1,241 @@
+#!/usr/bin/env perl
+################################################################################
+##
+## Copyright (C) 2012 Rohan McGovern <rohan@mcgovern.id.au>
+## 
+## Permission is hereby granted, free of charge, to any person obtaining a copy
+## of this software and associated documentation files (the "Software"), to deal
+## in the Software without restriction, including without limitation the rights
+## to use, copy, modify, merge, publish, distribute, sublicense, and/or sell 
+## copies of the Software, and to permit persons to whom the Software is
+## furnished to do so, subject to the following conditions:
+## 
+## The above copyright notice and this permission notice shall be included in all
+## copies or substantial portions of the Software.
+## 
+## THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+## IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+## FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+## AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+## LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+## OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+## SOFTWARE.
+##
+################################################################################
+
+use v5.8;
+use strict;
+use warnings;
+
+use Carp qw(confess);
+use File::Spec::Functions;
+use FindBin;
+use Getopt::Long;
+use List::Util qw(first);
+use Pod::Usage;
+use autodie;
+
+our $VERSION = '1';
+
+=head1 NAME
+
+ngitcached - a caching git proxy
+
+=head1 SYNOPSIS
+
+  ngitcached --cache-dir /srv/ngitcached
+
+Start a git daemon service on this machine which may proxy requests
+to other servers and cache the results.
+
+=head2 OPTIONS
+
+=over
+
+=item --help
+
+Print this usage info.
+
+=item --version
+
+Print version and exit.
+
+=item --git-port PORT
+
+Listen on the given port number for git connections.
+Default: 39418
+
+=item --http-port PORT
+
+Listen on the given port number for http connections.
+Default: 8080
+
+=item --https-port PORT
+
+Listen on the given port number for https connections.
+Default: 8081
+
+=item --cache-dir PATH
+
+Set the path to the git cache directory
+(mandatory).
+
+=item --node PATH
+
+Set the path to the node runtime to be used
+(default: first in $PATH).
+
+=item --verbose *
+
+Increase verbosity.
+May be used multiple times.
+
+=item --test
+
+Enable a few internal strict checks to help find bugs in ngitcached.
+This turns some warnings into fatal errors, and therefore should not be
+used in production.
+
+=back
+
+=head1 USING THE PROXY
+
+ngitcached may be used as a transparent proxy at the git or OS level, or an
+opt-in proxy at the git level by using a special syntax for git repositories.
+
+=head2 PROXY BY GIT CONFIG
+
+The C<core.gitProxy> git config value, or the C<GIT_PROXY_COMMAND> environment
+variable, may be used to redirect all git communications through ngitcached.
+
+For example, connections may be routed through an ngitcached instance running
+on gitproxy.example.com port 9418 by the following shell snippet:
+
+  GIT_PROXY_COMMAND=/tmp/proxy2ngitcached
+  { echo -e '#!/bin/sh\nexec netcat gitproxy.example.com 9418' } > $GIT_PROXY_COMMAND
+  chmod +x $GIT_PROXY_COMMAND
+  export GIT_PROXY_COMMAND
+
+See "git help config" for more information.
+
+=head2 PROXY BY OPERATING SYSTEM
+
+ngitcached may be used as a transparent proxy by arranging for outgoing git
+TCP connections to be routed through an ngitcached instance; for example, by
+the usage of iptables on Linux.
+
+This generally requires superuser privileges either on the client machine,
+or on a router between the client and server.
+
+=head2 PROXY BY SPECIAL GIT URL
+
+The proxy may be used by explicitly cloning from the proxy's URL and including
+the desired remote at the end of the URL, as a "remote" parameter in HTTP
+query string style.
+
+For example, git://github.com/rohanpm/ngitcached.git may be cloned via an
+ngitcached instance running on gitproxy.example.com port 9418 by the following
+command:
+
+  git clone git://gitproxy.example.com:9418/?remote=github.com/rohanpm/ngitcached.git
+
+=head1 SIGNALS
+
+The ngitcached process will react to the following signals:
+
+=over
+
+=item SIGHUP
+
+ngitcached will dump, to standard out, some statistics and the state
+of each connection to the proxy.
+
+=back
+
+=head1 BUGS
+
+A list of known bugs is available at https://github.com/rohanpm/ngitcached/issues
+
+=cut
+
+sub init_cache
+{
+    my ($cache_dir) = @_;
+
+    if (! -d catfile( $cache_dir, 'config' )) {
+        (0 == system( qw(git init --bare), $cache_dir ))
+            || confess "git init exited with code $?";
+    }
+
+    return;
+}
+
+sub print_version_and_exit
+{
+    print "ngitcached version $VERSION\n";
+    exit 0;
+}
+
+sub main
+{
+    my $node = 'node';
+    my $git_port = 39418;
+    my $http_port = 8080;
+    my $https_port = 8081;
+    my $test = 0;
+    my $loglevel = 0;
+    my $cache_dir;
+    my @unparsed_args = @ARGV;
+
+    GetOptions(
+        'help|?'        =>  sub { pod2usage(1) },
+        'node=s'        =>  \$node,
+        'cache-dir=s'   =>  \$cache_dir,
+        'git-port=i'    =>  \$git_port,
+        'http-port=i'   =>  \$http_port,
+        'https-port=i'  =>  \$https_port,
+        'verbose'       =>  sub { ++$loglevel },
+        'test'          =>  \$test,
+        'version'       =>  \&print_version_and_exit,
+    ) || pod2usage(2);
+
+    if (!$cache_dir) {
+        warn "missing mandatory --cache-dir parameter\n";
+        pod2usage(2);
+    }
+
+    if (! -f catfile( $cache_dir, 'config' )) {
+        init_cache( $cache_dir );
+    }
+
+    chdir( $cache_dir );
+
+    local $ENV{ NGITCACHED_GIT_PORT } = $git_port;
+    local $ENV{ NGITCACHED_HTTP_PORT } = $http_port;
+    local $ENV{ NGITCACHED_HTTPS_PORT } = $https_port;
+    local $ENV{ NGITCACHED_LOGLEVEL } = $loglevel;
+    local $ENV{ NGITCACHED_TEST } = $test;
+    local $ENV{ NGITCACHED_VERSION } = $VERSION;
+    local $ENV{ NGITCACHED_PROCESS_TITLE } =
+        "$FindBin::Bin/$FindBin::Script @unparsed_args";
+
+    my @MAIN_JS_CANDIDATES = (
+        catfile( $FindBin::Bin, qw(.. libexec ngitcached main.js) ),    # installed case (redhat)
+        catfile( $FindBin::Bin, qw(.. lib ngitcached main.js) ),        # installed case (debian)
+        catfile( $FindBin::Bin, 'main.js' ),                            # uninstalled case
+    );
+
+    my $MAIN_JS = first { -f $_ } @MAIN_JS_CANDIDATES;
+
+    if (!$MAIN_JS) {
+        die "main.js could not be located.  Looked here:\n"
+           .join("\n", map { "  $_" } @MAIN_JS_CANDIDATES)
+           ."\nIs your ngitcached installation complete?";
+    }
+
+    exec( $node, $MAIN_JS );
+    die "failed to execute: $!\nIs `node' installed and in PATH?\n";
+}
+
+main unless caller;
+1;

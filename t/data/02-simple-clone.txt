@@ -1,0 +1,34 @@
+# Start git daemon and ngitcached ...
+start_ngitcached --git-port 10231 --http-port 11231
+out0: Initialized empty Git repository in %TEMPDIR%/cache/
+out0: ngitcached git:// proxy listening on port 10231
+out0: ngitcached http:// proxy listening on port 11231
+
+cd /
+git daemon --reuseaddr --export-all --port=10232 %TEMPDIR% &
+
+# Make a repo with a (1MB) commit
+git init %TEMPDIR%/repo1
+cd %TEMPDIR%/repo1
+dd if=/dev/urandom of=file bs=1024 count=1024 2>/dev/null 1>&2
+git add file
+git commit -m 'commit 1'
+COMMIT1=$(git rev-parse HEAD)
+
+# Clone it via proxy
+cd %TEMPDIR%
+git clone --quiet git://127.0.0.1:10231/?remote=127.0.0.1:10232%TEMPDIR%/repo1 repo2
+cd repo2
+[ $(git rev-parse HEAD) = $COMMIT1 ]
+
+# Give the server a little bit of time for cleanup
+sleep 2
+
+# Should not be any .keep files
+[ x$(find %TEMPDIR%/cache/ -name '*.keep') = x ]
+
+# Should not be any in-progress refs
+( ! test -d %TEMPDIR%/cache/refs/in-progress )
+
+stop_ngitcached
+out0: Exiting gracefully due to signal.
