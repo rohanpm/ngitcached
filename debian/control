@@ -1,0 +1,23 @@
+Source: ngitcached
+Section: contrib/net
+Priority: extra
+Maintainer: Rohan McGovern <rohan@mcgovern.id.au>
+Build-Depends:
+    debhelper (>= 7.0.50~),
+    perl,
+    libreadonly-perl,
+    nodejs,
+    git-core
+Standards-Version: 3.8.4
+Homepage: https://github.com/rohanpm/ngitcached
+
+Package: ngitcached
+Architecture: all
+Depends: 
+    ${misc:Depends},
+    ${perl:Depends},
+    nodejs,
+    git-core
+Description: A caching git proxy.
+ A git proxy which caches requests from clients.
+ May also be used as a transparent proxy.

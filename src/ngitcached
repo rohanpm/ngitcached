@@ -31,6 +31,7 @@ use Carp qw(confess);
 use File::Spec::Functions;
 use FindBin;
 use Getopt::Long;
+use List::Util qw(first);
 use Pod::Usage;
 use autodie;
 
@@ -109,7 +110,20 @@ sub main
     local $ENV{ NGITCACHED_PORT } = $port;
     local $ENV{ NGITCACHED_LOGLEVEL } = $loglevel;
 
-    my $MAIN_JS = catfile( $FindBin::Bin, 'main.js' );
+    my @MAIN_JS_CANDIDATES = (
+        catfile( $FindBin::Bin, qw(.. libexec ngitcached main.js) ),    # installed case (redhat)
+        catfile( $FindBin::Bin, qw(.. lib ngitcached main.js) ),        # installed case (debian)
+        catfile( $FindBin::Bin, 'main.js' ),                            # uninstalled case
+    );
+
+    my $MAIN_JS = first { -f $_ } @MAIN_JS_CANDIDATES;
+
+    if (!$MAIN_JS) {
+        die "main.js could not be located.  Looked here:\n"
+           .join("\n", map { "  $_" } @MAIN_JS_CANDIDATES)
+           ."\nIs your ngitcached installation complete?";
+    }
+
     exec( $node, $MAIN_JS );
     die "failed to execute: $!\nIs `node' installed and in PATH?\n";
 }
