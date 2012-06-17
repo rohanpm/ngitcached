@@ -67,6 +67,51 @@ Set the path to the git cache directory
 
 =back
 
+=head1 USING THE PROXY
+
+ngitcached may be used as a transparent proxy at the git or OS level, or an
+opt-in proxy at the git level by using a special syntax for git repositories.
+
+=head2 PROXY BY GIT CONFIG
+
+The C<core.gitProxy> git config value, or the C<GIT_PROXY_COMMAND> environment
+variable, may be used to redirect all git communications through ngitcached.
+
+For example, connections may be routed through an ngitcached instance running
+on gitproxy.example.com port 9418 by the following shell snippet:
+
+  GIT_PROXY_COMMAND=/tmp/proxy2ngitcached
+  { echo -e '#!/bin/sh\nexec netcat gitproxy.example.com 9418' } > $GIT_PROXY_COMMAND
+  chmod +x $GIT_PROXY_COMMAND
+  export GIT_PROXY_COMMAND
+
+See "git help config" for more information.
+
+=head2 PROXY BY OPERATING SYSTEM
+
+ngitcached may be used as a transparent proxy by arranging for outgoing git
+TCP connections to be routed through an ngitcached instance; for example, by
+the usage of iptables on Linux.
+
+This generally requires superuser privileges either on the client machine,
+or on a router between the client and server.
+
+=head2 PROXY BY SPECIAL GIT URL
+
+The proxy may be used by explicitly cloning from the proxy's URL and including
+the desired remote at the end of the URL, as a "remote" parameter in HTTP
+query string style.
+
+For example, git://github.com/rohanpm/ngitcached.git may be cloned via an
+ngitcached instance running on gitproxy.example.com port 9418 by the following
+command:
+
+  git clone git://gitproxy.example.com:9418/?remote=github.com/rohanpm/ngitcached.git
+
+=head1 BUGS
+
+A list of known bugs is available at https://github.com/rohanpm/ngitcached/issues
+
 =cut
 
 sub init_cache
