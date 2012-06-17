@@ -26,6 +26,10 @@
 
 var port = process.env.NGITCACHED_PORT;
 
+if (process.env.NGITCACHED_PROCESS_TITLE) {
+  process.title = process.env.NGITCACHED_PROCESS_TITLE;
+}
+
 var net = require('net');
 var _ = require('underscore');
 var mylog = require('./log.js');

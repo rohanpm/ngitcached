@@ -133,6 +133,7 @@ sub main
     my $test = 0;
     my $loglevel = 0;
     my $cache_dir;
+    my @unparsed_args = @ARGV;
 
     GetOptions(
         'help|?'        =>  sub { pod2usage(1) },
@@ -157,6 +158,8 @@ sub main
     local $ENV{ NGITCACHED_PORT } = $port;
     local $ENV{ NGITCACHED_LOGLEVEL } = $loglevel;
     local $ENV{ NGITCACHED_TEST } = $test;
+    local $ENV{ NGITCACHED_PROCESS_TITLE } =
+        "$FindBin::Bin/$FindBin::Script @unparsed_args";
 
     my @MAIN_JS_CANDIDATES = (
         catfile( $FindBin::Bin, qw(.. libexec ngitcached main.js) ),    # installed case (redhat)
