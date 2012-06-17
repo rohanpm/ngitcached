@@ -25,6 +25,8 @@ provide a stable interface to flaky git servers.
 
   make install
 
+Installing from source requires the "npm" command to be available.
+
 See `make help' for more information.
 
 =head2 Installing from binaries

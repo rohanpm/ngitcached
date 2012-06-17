@@ -50,9 +50,18 @@ ngitcached.1:
 clean:
 	rm -f ngitcached.1
 
-install: docs
+install: install_node_modules docs
 	install -D -m 755 "$(SRCDIR)src/ngitcached" "$(INSTALL_ROOT)$(BINDIR)/ngitcached"
 	install -D -m 644 ngitcached.1 "$(INSTALL_ROOT)$(MANDIR)/man1/ngitcached.1"
 	install -d "$(INSTALL_ROOT)$(JSDIR)"
 	find "$(SRCDIR)src" -type f -name '*.js' -exec install -D -m 644 -t "$(INSTALL_ROOT)$(JSDIR)" '{}' ';'
 	@echo ngitcached is installed and may be run by '"$(INSTALL_ROOT)$(BINDIR)/ngitcached"'
+
+install_node_modules: node_modules
+	cd "$(SRCDIR)" && find node_modules -type f | while read src; do \
+	    dest="$(INSTALL_ROOT)$(JSDIR)/$$src"; \
+	    install -v -D "$$src" "$$dest"; \
+	done
+
+node_modules: package.json
+	npm install

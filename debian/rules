@@ -8,6 +8,8 @@
 override_dh_auto_install:
 	dh_auto_install -- LIBEXECDIR=/usr/lib
 
-# there is no building required
+# ngitcached itself doesn't need building;
+# there may be some node_modules in need of compilation
 override_dh_auto_build:
+	npm rebuild
 
