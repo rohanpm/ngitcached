@@ -1032,7 +1032,7 @@ function GitProxy() {
     hot: 0,
     warm: 0,
     cold: 0,
-    no_objects: 0,
+    no_objects: 0
   };
 }
 
@@ -1088,7 +1088,7 @@ GitProxy.prototype.dumpStats = function () {
     this.stats.no_objects
   );
   mylog.log(0, out);
-}
+};
 
 GitProxy.prototype.dumpInfo = function () {
   mylog.log(0, "\n\nngitcached v" + process.env.NGITCACHED_VERSION);
