@@ -1,0 +1,23 @@
+# Start git daemon and ngitcached ...
+start_ngitcached --port 10231
+out0: Initialized empty Git repository in %TEMPDIR%/cache/
+out0: ngitcached listening on port 10231
+
+cd /
+git daemon --reuseaddr --export-all --port=10232 %TEMPDIR% &
+
+# Make a repo with a (1MB) commit
+git init %TEMPDIR%/repo1
+cd %TEMPDIR%/repo1
+dd if=/dev/urandom of=file bs=1024 count=1024 2>/dev/null 1>&2
+git add file
+git commit -m 'commit 1'
+COMMIT1=$(git rev-parse HEAD)
+
+# ls-remote via proxy
+( git ls-remote git://127.0.0.1:10231/?remote=127.0.0.1:10232%TEMPDIR%/repo1 > ls-remote.log )
+
+grep $COMMIT1 ls-remote.log
+
+stop_ngitcached
+out0: Exiting gracefully due to signal.

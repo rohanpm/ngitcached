@@ -278,7 +278,7 @@ GitProxyConnection.prototype.readServerPreamble = function (message, cb) {
 
 /*
   Read a WANT message from client.
-  cb: function (error)
+  cb: function (error, want_count)
 */
 GitProxyConnection.prototype.readClientWant = function (message, cb) {
   var gitproxy = this,
@@ -293,12 +293,12 @@ GitProxyConnection.prototype.readClientWant = function (message, cb) {
     revlistPq = this.revlistPq;
     delete this.revlistPq;
 
-    if (revlistPq.empty()) {
-      return cb.call(this, undefined);
+    if (!revlistPq || revlistPq.empty()) {
+      return cb.call(this, undefined, _.size(gitproxy.client.want));
     }
     this.client.stream.pause();
     return revlistPq.once('emptied', function () {
-      return cb.call(this, undefined);
+      return cb.call(this, undefined, _.size(gitproxy.client.want));
     });
   }
 
@@ -726,7 +726,9 @@ function gitProxyStateObject(fire) {
       'serverStream.newListener'
     ],
     actions: {
-      'api.dumpInfo': _.bind(dumpInfo, undefined, '(unknown state)')
+      'api.dumpInfo': _.bind(dumpInfo, undefined, '(unknown state)'),
+      // client may close connection at any time
+      'clientStream.end': 'Completed'
     }
   };
 
@@ -795,8 +797,12 @@ function gitProxyStateObject(fire) {
     },
 
     WritingServerWant: {
-      entry: function () {
-        cache_stat = CACHE_COLD;
+      entry: function (count) {
+        // if client wants at least one object, we start in COLD state.
+        // Otherwise we remain in default "no objects requested" state.
+        if (count) {
+          cache_stat = CACHE_COLD;
+        }
         fire.conn.writeServerWant();
       },
       actions: {
@@ -805,7 +811,9 @@ function gitProxyStateObject(fire) {
           // No want?  Then drop server connection, skip straight to UpdateRefs.
           // This is an entirely hot request (100% from cache)
           if (count == 0) {
-            cache_stat = CACHE_HOT;
+            if (cache_stat != CACHE_NO_OBJECTS_REQUESTED) {
+              cache_stat = CACHE_HOT;
+            }
             conn.server.stream.destroy();
             return 'UpdatingProxyRefs';
           }
@@ -971,6 +979,7 @@ function gitProxyStateObject(fire) {
       },
       actions: {
         'api.dumpInfo': _.bind(dumpInfo, undefined, '(finished)'),
+        'clientStream.close': '@ignore',
         'exit': function () {
           return ['@exit', cache_stat];
         }
