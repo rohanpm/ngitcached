@@ -55,15 +55,26 @@ to other servers and cache the results.
 Listen on the given port number.
 Default: 9418 (standard git-daemon port).
 
+=item --cache-dir PATH
+
+Set the path to the git cache directory
+(mandatory).
+
 =item --node PATH
 
 Set the path to the node runtime to be used
 (default: first in $PATH).
 
-=item --cache-dir PATH
+=item --verbose *
 
-Set the path to the git cache directory
-(mandatory).
+Increase verbosity.
+May be used multiple times.
+
+=item --test
+
+Enable a few internal strict checks to help find bugs in ngitcached.
+This turns some warnings into fatal errors, and therefore should not be
+used in production.
 
 =back
 
@@ -107,6 +118,19 @@ ngitcached instance running on gitproxy.example.com port 9418 by the following
 command:
 
   git clone git://gitproxy.example.com:9418/?remote=github.com/rohanpm/ngitcached.git
+
+=head1 SIGNALS
+
+The ngitcached process will react to the following signals:
+
+=over
+
+=item SIGHUP
+
+ngitcached will dump, to standard out, some statistics and the state
+of each connection to the proxy.
+
+=back
 
 =head1 BUGS
 
