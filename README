@@ -24,6 +24,10 @@ Installing from binaries
 Ubuntu: there is a PPA available for ngitcached packages:
 https://launchpad.net/~rohanpm/+archive/ngitcached
 
+It is also recommended to obtain node.js from this PPA:
+https://launchpad.net/~chris-lea/+archive/node.js
+
+  sudo apt-add-repository ppa:chris-lea/node.js
   sudo apt-add-repository ppa:rohanpm/ngitcached
   sudo apt-get update
   sudo apt-get install ngitcached
