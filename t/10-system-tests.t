@@ -211,10 +211,8 @@ sub main
         @data = grep { $_ =~ qr{$pattern} } @data;
     }
 
-    plan tests => scalar(@data);
-
     foreach my $datafile (@data) {
-        subtest basename($datafile) => sub { test_one_data $datafile },
+        test_one_data $datafile;
     }
 }
 
