@@ -391,7 +391,7 @@ GitProxyConnection.prototype.readClientWant = function (message, cb) {
 */
 GitProxyConnection.prototype.writeServerWant = function (cb) {
   // TODO: proper capability handling
-  var postfix = ' side-band side-band-64k',
+  var postfix = ' side-band side-band-64k thin-pack',
     sha,
     count = 0;
 
@@ -494,7 +494,7 @@ GitProxyConnection.prototype.doLocalIndexPack = function (cb) {
 
   git_index_pack = node.child_process.spawn(
     'git',
-    [ 'index-pack', '-v', '--stdin', '--keep='+conn_id ]
+    [ 'index-pack', '-v', '--stdin', '--fix-thin', '--keep='+conn_id ]
   );
   git_index_pack.stdin.on('error', function (error) {
     return cb.call(this,
