@@ -236,6 +236,7 @@ GitProxyConnection.prototype.supportedCapabilities = function () {
   return [
     'thin-pack',
     'no-progress',
+    'include-tag',
     'side-band',
     'side-band-64k'
   ];
