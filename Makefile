@@ -15,7 +15,7 @@ help:
 	@echo
 
 check:
-	prove -r $(SRCDIR)
+	prove -j2 -r $(SRCDIR)
 
 install:
 	@echo Not yet implemented!
