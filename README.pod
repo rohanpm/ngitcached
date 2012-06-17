@@ -61,6 +61,14 @@ to other servers and cache the results.
 
 =over
 
+=item --help
+
+Print this usage info.
+
+=item --version
+
+Print version and exit.
+
 =item --port PORT
 
 Listen on the given port number.

@@ -1,5 +1,3 @@
-VERSION=v0-git
-
 SRCDIR=$(dir $(firstword $(MAKEFILE_LIST)))
 PREFIX=/usr
 BINDIR=$(PREFIX)/bin
@@ -45,7 +43,7 @@ README.pod: src/ngitcached Makefile
 	mv README.pod.new README.pod
 
 ngitcached.1:
-	pod2man "--release=ngitcached $(VERSION)" "--center=ngitcached manual" "$(SRCDIR)src/ngitcached" ngitcached.1
+	pod2man "--center=ngitcached manual" "$(SRCDIR)src/ngitcached" ngitcached.1
 
 clean:
 	rm -f ngitcached.1

@@ -1008,7 +1008,11 @@ GitProxy.prototype.handleConnect = function (c) {
 };
 
 GitProxy.prototype.dumpInfo = function () {
-  mylog.log(0, "Connections:");
+  mylog.log(0,
+    "ngitcached v"
+   +process.env.NGITCACHED_VERSION
+   +"\nConnections:"
+  );
   this.factory.broadcast('api.dumpInfo');
 };
 

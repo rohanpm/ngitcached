@@ -35,6 +35,8 @@ use List::Util qw(first);
 use Pod::Usage;
 use autodie;
 
+our $VERSION = '1';
+
 =head1 NAME
 
 ngitcached - a caching git proxy
@@ -49,6 +51,14 @@ to other servers and cache the results.
 =head2 OPTIONS
 
 =over
+
+=item --help
+
+Print this usage info.
+
+=item --version
+
+Print version and exit.
 
 =item --port PORT
 
@@ -150,6 +160,12 @@ sub init_cache
     return;
 }
 
+sub print_version_and_exit
+{
+    print "ngitcached version $VERSION\n";
+    exit 0;
+}
+
 sub main
 {
     my $node = 'node';
@@ -166,6 +182,7 @@ sub main
         'port=i'        =>  \$port,
         'verbose'       =>  sub { ++$loglevel },
         'test'          =>  \$test,
+        'version'       =>  \&print_version_and_exit,
     ) || pod2usage(2);
 
     if (!$cache_dir) {
@@ -182,6 +199,7 @@ sub main
     local $ENV{ NGITCACHED_PORT } = $port;
     local $ENV{ NGITCACHED_LOGLEVEL } = $loglevel;
     local $ENV{ NGITCACHED_TEST } = $test;
+    local $ENV{ NGITCACHED_VERSION } = $VERSION;
     local $ENV{ NGITCACHED_PROCESS_TITLE } =
         "$FindBin::Bin/$FindBin::Script @unparsed_args";
 
