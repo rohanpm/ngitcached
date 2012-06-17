@@ -762,7 +762,7 @@ function gitProxyStateObject(fire) {
         'api.dumpInfo': _.bind(dumpInfo, undefined, 'connecting to server'),
         'conn.startUploadPack.err': function (ex) {
           conn.fatalError('fatal error while connecting to server: ' + ex);
-          return '@error';
+          return ['@error', 'while connecting to server: ' + ex];
         },
         'conn.startUploadPack.done': function (stream) {
           return ['ReadingServerPreamble', stream];
@@ -792,7 +792,10 @@ function gitProxyStateObject(fire) {
         'clientStream.message': function (m) {
           fire.conn.readClientWant(m);
         },
-        'conn.readClientWant.done': 'WritingServerWant'
+        'conn.readClientWant.done': 'WritingServerWant',
+        'conn.readClientWant.err': function (ex) {
+          return ['@error', 'while reading client want: ' + ex];
+        }
       }
     },
 
@@ -981,8 +984,34 @@ function gitProxyStateObject(fire) {
         'api.dumpInfo': _.bind(dumpInfo, undefined, '(finished)'),
         'clientStream.close': '@ignore',
         'exit': function () {
-          return ['@exit', cache_stat];
+          return ['@exit', undefined, cache_stat];
         }
+      }
+    },
+
+    '@error': {
+      entry: function (error) {
+        if (error == undefined) {
+          error = 'unknown error';
+        }
+
+        warn( 'dropping connection: ' + error );
+
+        try {
+          conn.client.stream.destroy( );
+        } catch (e1) {}
+
+        try {
+          conn.server.stream.destroy( );
+        } catch (e2) {}
+
+        return ['@exit', error];
+      },
+
+      actions: {
+        'clientStream': '@ignore',
+        'serverStream': '@ignore',
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'terminating due to error')
       }
     }
 
@@ -1042,18 +1071,23 @@ GitProxy.prototype.constructor = GitProxy;
 GitProxy.prototype.handleConnect = function (c) {
   var sm = this.factory.spawn(c);
   this.recordConnectionInProgress();
-  sm.on('error', _.bind(this.recordConnectionComplete, this, REASON_ERROR));
-  sm.on('exit', _.bind(this.recordConnectionComplete, this, REASON_EXIT));
+  sm.on('exit', _.bind(this.recordConnectionComplete, this));
+  sm.on('error', function (error) {
+    mylog.trace(0, 'Error (likely bug): ' + error);
+  });
+  sm.on('warn', function (warning) {
+    mylog.trace(0, 'Warning (likely bug): ' + warning);
+  });
 };
 
 GitProxy.prototype.recordConnectionInProgress = function () {
   ++this.stats.in_progress;
 };
 
-GitProxy.prototype.recordConnectionComplete = function (reason, warmth) {
+GitProxy.prototype.recordConnectionComplete = function (error, warmth) {
   --this.stats.in_progress;
   ++this.stats.completed;
-  if (reason == REASON_ERROR) {
+  if (error != undefined) {
     ++this.stats.error;
     return;
   }
