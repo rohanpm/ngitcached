@@ -31,7 +31,18 @@ help:
 check:
 	prove -j2 --verbose -r $(SRCDIR)
 
-docs: ngitcached.1
+docs: README.pod ngitcached.1
+
+README.pod: src/ngitcached Makefile
+	{ \
+	    podselect -sections '!Manual' README.pod; \
+	    echo '\n=cut\nThe below section is generated automatically!\n=head1 Manual\n'; \
+	    podselect src/ngitcached | sed -r \
+		-e 's|^=head3|=head4|' \
+		-e 's|^=head2|=head3|' \
+		-e 's|^=head1|=head2|'; \
+	} > README.pod.new
+	mv README.pod.new README.pod
 
 ngitcached.1:
 	pod2man "--release=ngitcached $(VERSION)" "--center=ngitcached manual" "$(SRCDIR)src/ngitcached" ngitcached.1
