@@ -910,7 +910,7 @@ function gitProxyStateObject(fire) {
         fire.conn.doLocalUploadPack();
       },
       actions: {
-        'api.dumpInfo': _.bind(dumpInfo, undefined, 'updating refs on proxy'),
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'sending pack to client'),
         'conn.doLocalUploadPack.done': 'WaitingClientClose',
         'conn.doLocalUploadPack.err': function (ex) {
           return ['@error', 'while updating refs on proxy: ' + ex];
