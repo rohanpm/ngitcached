@@ -11,3 +11,21 @@ ngitcached is a git proxy with two primary goals:
 
   - provide a stable interface to flaky git servers.
 
+Installing from source
+======================
+
+  make install
+
+See `make help' for more information.
+
+Installing from binaries
+========================
+
+Ubuntu: there is a PPA available for ngitcached packages:
+https://launchpad.net/~rohanpm/+archive/ngitcached
+
+  sudo apt-add-repository ppa:rohanpm/ngitcached
+  sudo apt-get update
+  sudo apt-get install ngitcached
+
+Other platforms: packages have not yet been prepared.
