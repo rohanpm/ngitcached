@@ -32,6 +32,7 @@ use FindBin;
 use Test::More;
 use autodie;
 use IPC::Open2;
+use Getopt::Long qw(:config pass_through);
 
 use Readonly;
 
@@ -39,6 +40,8 @@ Readonly my $TESTDIR => $FindBin::Bin;
 Readonly my $SRCDIR => dirname( $TESTDIR );
 Readonly my $NGITCACHED => catfile( $SRCDIR, qw(src ngitcached) );
 Readonly my $DATADIR => catfile( $TESTDIR, 'data' );
+
+my $DEBUG = 0;
 
 sub timed_readline
 {
@@ -59,7 +62,11 @@ sub start_ngitcached
         $args = "";
     }
 
-    my $tempdir = tempdir( 'ngitcached-system-tests-XXXXXX', TMPDIR => 1, CLEANUP => 1 );
+    my $tempdir = tempdir( 'ngitcached-system-tests-XXXXXX', TMPDIR => 1, CLEANUP => !$DEBUG );
+
+    if ($DEBUG) {
+        warn "Temporary directory will be retained at $tempdir\n";
+    }
 
     my @cmd = ($NGITCACHED, '--cache-dir', "$tempdir/cache", split(/\s+/, $args));
     my $fh;
@@ -205,6 +212,10 @@ sub test_one_data
 sub main
 {
     my @data = sort glob "$DATADIR/*.txt";
+
+    GetOptions(
+        debug => \$DEBUG,
+    ) || die $!;
 
     if (@ARGV == 1) {
         my $pattern = $ARGV[0];
