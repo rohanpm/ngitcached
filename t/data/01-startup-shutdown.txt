@@ -1,0 +1,5 @@
+start_ngitcached --port 10231
+out0: Initialized empty Git repository in %TEMPDIR%/cache/
+out0: ngitcached listening on port 10231
+stop_ngitcached
+out0: Exiting gracefully due to signal.

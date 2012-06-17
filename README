@@ -1,0 +1,13 @@
+ngitcached - a caching git proxy
+================================
+
+*** THIS IS PRE-RELEASE SOFTWARE ***
+It is not suitable for use in production.
+
+ngitcached is a git proxy with two primary goals:
+
+  - speed up repeated clones/fetches of the same git objects from
+    multiple clients.
+
+  - provide a stable interface to flaky git servers.
+

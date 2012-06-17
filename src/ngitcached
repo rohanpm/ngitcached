@@ -1,0 +1,118 @@
+#!/usr/bin/env perl
+################################################################################
+##
+## Copyright (C) 2012 Rohan McGovern <rohan@mcgovern.id.au>
+## 
+## Permission is hereby granted, free of charge, to any person obtaining a copy
+## of this software and associated documentation files (the "Software"), to deal
+## in the Software without restriction, including without limitation the rights
+## to use, copy, modify, merge, publish, distribute, sublicense, and/or sell 
+## copies of the Software, and to permit persons to whom the Software is
+## furnished to do so, subject to the following conditions:
+## 
+## The above copyright notice and this permission notice shall be included in all
+## copies or substantial portions of the Software.
+## 
+## THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+## IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+## FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+## AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+## LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+## OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+## SOFTWARE.
+##
+################################################################################
+
+use v5.8;
+use strict;
+use warnings;
+
+use Carp qw(confess);
+use File::Spec::Functions;
+use FindBin;
+use Getopt::Long;
+use Pod::Usage;
+use autodie;
+
+=head1 NAME
+
+ngitcached - a caching git proxy
+
+=head1 SYNOPSIS
+
+  ngitcached --cache-dir /srv/ngitcached
+
+Start a git daemon service on this machine which may proxy requests
+to other servers and cache the results.
+
+=head2 OPTIONS
+
+=over
+
+=item --port PORT
+
+Listen on the given port number.
+Default: 9418 (standard git-daemon port).
+
+=item --node PATH
+
+Set the path to the node runtime to be used
+(default: first in $PATH).
+
+=item --cache-dir PATH
+
+Set the path to the git cache directory
+(mandatory).
+
+=back
+
+=cut
+
+sub init_cache
+{
+    my ($cache_dir) = @_;
+
+    if (! -d catfile( $cache_dir, 'config' )) {
+        (0 == system( qw(git init --bare), $cache_dir ))
+            || confess "git init exited with code $?";
+    }
+
+    return;
+}
+
+sub main
+{
+    my $node = 'node';
+    my $port = 9418;
+    my $loglevel = 0;
+    my $cache_dir;
+
+    GetOptions(
+        'help|?'        =>  sub { pod2usage(1) },
+        'node=s'        =>  \$node,
+        'cache-dir=s'   =>  \$cache_dir,
+        'port=i'        =>  \$port,
+        'verbose'       =>  sub { ++$loglevel },
+    ) || pod2usage(2);
+
+    if (!$cache_dir) {
+        warn "missing mandatory --cache-dir parameter\n";
+        pod2usage(2);
+    }
+
+    if (! -f catfile( $cache_dir, 'config' )) {
+        init_cache( $cache_dir );
+    }
+
+    chdir( $cache_dir );
+
+    local $ENV{ NGITCACHED_PORT } = $port;
+    local $ENV{ NGITCACHED_LOGLEVEL } = $loglevel;
+
+    my $MAIN_JS = catfile( $FindBin::Bin, 'main.js' );
+    exec( $node, $MAIN_JS );
+    die "failed to execute: $!\nIs `node' installed and in PATH?\n";
+}
+
+main unless caller;
+1;
