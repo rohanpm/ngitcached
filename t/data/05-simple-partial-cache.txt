@@ -1,7 +1,8 @@
 # Start git daemon and ngitcached ...
-start_ngitcached --port 10231 --test
+start_ngitcached --git-port 10231 --http-port 11231 --test
 out0: Initialized empty Git repository in %TEMPDIR%/cache/
-out0: ngitcached listening on port 10231
+out0: ngitcached git:// proxy listening on port 10231
+out0: ngitcached http:// proxy listening on port 11231
 
 cd /
 git daemon --reuseaddr --export-all --port=10232 %TEMPDIR% &

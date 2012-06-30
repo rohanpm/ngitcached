@@ -24,13 +24,16 @@
 
 "use strict";
 
-var port = process.env.NGITCACHED_PORT;
+var git_port = process.env.NGITCACHED_GIT_PORT;
+var http_port = process.env.NGITCACHED_HTTP_PORT;
+var https_port = process.env.NGITCACHED_HTTPS_PORT;
 
 if (process.env.NGITCACHED_PROCESS_TITLE) {
   process.title = process.env.NGITCACHED_PROCESS_TITLE;
 }
 
 var net = require('net');
+var http = require('http');
 var _ = require('underscore');
 var mylog = require('./log.js');
 
@@ -46,8 +49,6 @@ process.on('SIGINT', exitOnSignal);
 process.on('SIGTERM', exitOnSignal);
 process.on('SIGHUP', gitproxy.dumpInfo);
 
-var server = net.createServer(gitproxy.handleConnect);
-
 /*
     Avoid death on any uncaught exceptions.
     However, we aim to catch all exceptions, so this is always a bug.
@@ -59,8 +60,14 @@ if (!process.env.NGITCACHED_TEST) {
   });
 }
 
-server.listen(port, function () {
-  mylog.log(0, 'ngitcached listening on port ' + port);
+net.createServer(gitproxy.handleGitConnect).listen(git_port, function () {
+  mylog.log(0, 'ngitcached git:// proxy listening on port ' + git_port);
 });
+http.createServer(gitproxy.handleHttpConnect).listen(http_port, function () {
+  mylog.log(0, 'ngitcached http:// proxy listening on port ' + http_port);
+});
+//net.createServer(gitproxy.handleHttpsConnect).listen(https_port, function () {
+//  mylog.log(0, 'ngitcached https:// proxy listening on port ' + https_port);
+//});
 
 // vim: expandtab:ts=2:sw=2

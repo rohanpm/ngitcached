@@ -145,6 +145,7 @@ sub test_one_data
         if (exists $context{ tempdir }) {
             $line =~ s/%TEMPDIR%/$context{ tempdir }/g; 
         }
+        $line =~ s/%TESTDIR%/$FindBin::Bin/g; 
 
         if ($line =~ m{\A start_ngitcached (.*)\z}xms) {
             if (exists $context{ ngitcached }) {

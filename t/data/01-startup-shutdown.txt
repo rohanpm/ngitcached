@@ -1,5 +1,6 @@
-start_ngitcached --port 10231
+start_ngitcached --git-port 10231 --http-port 11231
 out0: Initialized empty Git repository in %TEMPDIR%/cache/
-out0: ngitcached listening on port 10231
+out0: ngitcached git:// proxy listening on port 10231
+out0: ngitcached http:// proxy listening on port 11231
 stop_ngitcached
 out0: Exiting gracefully due to signal.

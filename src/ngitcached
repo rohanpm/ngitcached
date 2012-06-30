@@ -60,10 +60,20 @@ Print this usage info.
 
 Print version and exit.
 
-=item --port PORT
+=item --git-port PORT
 
-Listen on the given port number.
-Default: 9418 (standard git-daemon port).
+Listen on the given port number for git connections.
+Default: 39418
+
+=item --http-port PORT
+
+Listen on the given port number for http connections.
+Default: 8080
+
+=item --https-port PORT
+
+Listen on the given port number for https connections.
+Default: 8081
 
 =item --cache-dir PATH
 
@@ -169,7 +179,9 @@ sub print_version_and_exit
 sub main
 {
     my $node = 'node';
-    my $port = 9418;
+    my $git_port = 39418;
+    my $http_port = 8080;
+    my $https_port = 8081;
     my $test = 0;
     my $loglevel = 0;
     my $cache_dir;
@@ -179,7 +191,9 @@ sub main
         'help|?'        =>  sub { pod2usage(1) },
         'node=s'        =>  \$node,
         'cache-dir=s'   =>  \$cache_dir,
-        'port=i'        =>  \$port,
+        'git-port=i'    =>  \$git_port,
+        'http-port=i'   =>  \$http_port,
+        'https-port=i'  =>  \$https_port,
         'verbose'       =>  sub { ++$loglevel },
         'test'          =>  \$test,
         'version'       =>  \&print_version_and_exit,
@@ -196,7 +210,9 @@ sub main
 
     chdir( $cache_dir );
 
-    local $ENV{ NGITCACHED_PORT } = $port;
+    local $ENV{ NGITCACHED_GIT_PORT } = $git_port;
+    local $ENV{ NGITCACHED_HTTP_PORT } = $http_port;
+    local $ENV{ NGITCACHED_HTTPS_PORT } = $https_port;
     local $ENV{ NGITCACHED_LOGLEVEL } = $loglevel;
     local $ENV{ NGITCACHED_TEST } = $test;
     local $ENV{ NGITCACHED_VERSION } = $VERSION;

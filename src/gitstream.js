@@ -31,41 +31,126 @@ var node = {
 var myutil = require('./util.js');
 var mylog = require('./log.js');
 
-function GitStream(socket) {
-  var gitstream = this,
-    i,
-    proxyevents = [ 'end', 'error', 'close' ],
-    proxyfunctions = [ 'destroy', 'write', 'destroy', 'destroySoon' ];
+function GitStream(protocol, connection) {
+  var gitstream = this;
 
-  this._socket = socket;
   this._remainingData = null;
   this._useSideband = true;
   this._paused = false;
   this._queuedEmits = [];
 
-  for (i = 0; i < proxyevents.length; ++i) {
-    this._setProxyEvent(proxyevents[i]);
+  if (protocol == 'git') {
+    this.initGit(connection);
+  }
+  if (protocol == 'http') {
+    this.initHttp(connection.read, connection.write);
   }
 
-  for (i = 0; i < proxyfunctions.length; ++i) {
-    this._setProxyFunction(proxyfunctions[i]);
-  }
-
-  this._socket.on('data', function () {
-    gitstream._onData.apply(gitstream, arguments);
-  });
+  this._setProxyFunction('_writeStream', 'end');
 }
 
 GitStream.prototype = new node.events.EventEmitter();
 GitStream.prototype.constructor = GitStream;
-exports.GitStream = GitStream;
 
-GitStream.prototype._setProxyEvent = function (eventName) {
+GitStream.prototype.initGit = function (socket) {
+  var gitstream = this,
+    i,
+    proxyevents = [ 'end', 'error', 'close' ],
+    proxyfunctions = [ 'destroy', 'write', 'destroy', 'destroySoon' ];
+
+  this._readStream = socket;
+  this._readSocket = socket;
+  this._writeStream = socket;
+
+  for (i = 0; i < proxyevents.length; ++i) {
+    this._setProxyEvent(socket, proxyevents[i]);
+  }
+
+  for (i = 0; i < proxyfunctions.length; ++i) {
+    this._setProxyFunction('_readStream', proxyfunctions[i]);
+  }
+
+  this._readStream.on('data', function () {
+    gitstream._onData.apply(gitstream, arguments);
+  });
+};
+
+GitStream.prototype.initHttp = function (reader, writer) {
+  var gitstream = this,
+    i,
+    proxyevents = [ 'end', 'error', 'close' ],
+    proxyfunctions = [ 'destroy', 'destroy', 'destroySoon' ];
+
+  if (reader == 'pending') {
+    writer.once('response', function (r) {
+      gitstream.initHttpReader(r, proxyevents);
+    });
+  } else {
+    this.initHttpReader(reader, proxyevents);
+  }
+
+  if (writer == 'pending') {
+    reader.once('response', function (r) {
+      gitstream.initHttpWriter(r, proxyevents);
+    });
+  } else {
+    this.initHttpWriter(writer, proxyevents);
+  }
+
+  for (i = 0; i < proxyfunctions.length; ++i) {
+    this._setProxyFunction('_readStream', proxyfunctions[i]);
+    this._setProxyFunction('_writeStream', proxyfunctions[i]);
+  }
+
+  this._setProxyFunction('_writeStream', 'write');
+};
+
+GitStream.prototype.initHttpReader = function (reader, proxyevents) {
+  var gitstream = this,
+    type = reader.headers['content-type'],
+    i;
+
+  this._readStream = reader;
+  this._readSocket = reader.connection;
+
+  for (i = 0; i < proxyevents.length; ++i) {
+    this._setProxyEvent(this._readStream, proxyevents[i]);
+  }
+
+  if (type == 'text/html') {
+    this._readStream.on('data', function (data) {
+      mylog.log(1, 'unexpected HTTP response: ' + data);
+    });
+    process.nextTick(function () {
+      gitstream.emitMessage('error', 'got data of type ' + type);
+    });
+  } else {
+    this._readStream.on('data', function () {
+      gitstream._onData.apply(gitstream, arguments);
+    });
+  }
+
+  mylog.log(3, 'GitStream reading from HTTP: ' + node.util.inspect(reader));
+};
+
+GitStream.prototype.initHttpWriter = function (writer, proxyevents) {
+  var i;
+
+  this._writeStream = writer;
+
+  for (i = 0; i < proxyevents.length; ++i) {
+    this._setProxyEvent(this._writeStream, proxyevents[i]);
+  }
+
+  mylog.log(3, 'GitStream writing to HTTP: ' + node.util.inspect(writer));
+};
+
+GitStream.prototype._setProxyEvent = function (stream, eventName) {
   var gitstream = this;
-  this._socket.on(eventName, function () {
+  stream.on(eventName, function () {
     var args = [];
     if (eventName == 'error') {
-      mylog.log(0, 'GitStream error: ' + node.util.inspect(arguments));
+      mylog.trace(0, 'GitStream error: ' + node.util.inspect(arguments));
     }
     if (arguments.length) {
       args = Array.prototype.slice.apply(arguments);
@@ -75,18 +160,19 @@ GitStream.prototype._setProxyEvent = function (eventName) {
   });
 };
 
-GitStream.prototype._setProxyFunction = function (functionName) {
+GitStream.prototype._setProxyFunction = function (streamName, functionName) {
   var gitstream = this;
   this[functionName] = function () {
-    if (!gitstream._socket) {
+    var stream = gitstream[streamName];
+    if (!stream) {
       return;
     }
-    gitstream._socket[functionName].apply(gitstream._socket, arguments);
+    stream[functionName].apply(stream, arguments);
   };
 };
 
 GitStream.prototype.pause = function () {
-  this._socket.pause();
+  this._readStream.pause();
   this._paused = true;
 };
 
@@ -97,18 +183,22 @@ GitStream.prototype.resume = function () {
   process.nextTick(function () {
     gitstream._flushQueuedEmits();
     if (!gitstream._paused) {
-      gitstream._socket.resume();
+      gitstream._readStream.resume();
     }
   });
 };
 
-GitStream.prototype.socket = function () {
-  return this._socket;
+GitStream.prototype.readSocket = function () {
+  return this._readSocket;
 };
 
 GitStream.prototype.writeMessage = function (message) {
-  if (!this._socket) {
+  if (!this._writeStream) {
     mylog.log(1, 'GitStream: dropped write after fatal error: ' + message);
+    return;
+  }
+  if (!this._writeStream.writable) {
+    mylog.trace(1, 'GitStream: attempted write to unwritable stream');
     return;
   }
   if (!(message instanceof Buffer)) {
@@ -119,20 +209,22 @@ GitStream.prototype.writeMessage = function (message) {
   }
   var to_write = this._formatPktLine(message);
   try {
-    this._socket.write(to_write);
+    this._writeStream.write(to_write);
   } catch (e) {
     mylog.trace(1, 'GitStream: error writing to socket: ' + e);
-    this._socket.destroySoon();
-    this._socket.removeAllListeners('data');
-    this._socket.on('data', function (d) {
+    this._readStream.destroySoon();
+    this._writeStream.destroySoon();
+    this._readStream.removeAllListeners('data');
+    this._readStream.on('data', function (d) {
       mylog.log(1, 'GitStream: dropped read after fatal error: ' + d);
     });
-    this._socket = undefined;
+    this._readStream = undefined;
+    this._writeStream = undefined;
   }
 };
 
 GitStream.prototype.writeFlush = function () {
-  this._socket.write('0000');
+  this._writeStream.write('0000');
 };
 
 GitStream.prototype._prefixHexLen = function (message) {
@@ -162,6 +254,8 @@ GitStream.prototype._onData = function (data) {
   data = myutil.bufcat(this._remainingData, data);
   parsed = this._parsePktLine(data);
   this._remainingData = parsed.remaining;
+
+  mylog.log(4, 'GitStream data: ' + data + "\nParsed: " + parsed.messages.length);
 
   for (i = 0; i < parsed.messages.length; ++i) {
     msg = parsed.messages[i];
@@ -248,5 +342,7 @@ GitStream.prototype._parsePktLine = function (data) {
 
   return out;
 };
+
+exports.GitStream = GitStream.prototype.constructor;
 
 // vim: expandtab:ts=2:sw=2

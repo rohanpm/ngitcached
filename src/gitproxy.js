@@ -30,7 +30,8 @@ var node = {
   url: require('url'),
   util: require('util'),
   events: require('events'),
-  child_process: require('child_process')
+  child_process: require('child_process'),
+  http: require('http')
 };
 
 var _ = require('underscore');
@@ -43,6 +44,10 @@ var ProcessQueue = require('./processqueue.js').ProcessQueue;
 
 var GIT_PORT = 9418;
 
+var HTTP_USER_AGENT =
+  // User-Agent contains our version and a tested git version
+  'ngitcached/' + process.env.NGITCACHED_VERSION + ' git/1.7.9.5';
+
 var CACHE_HOT = 1,
   CACHE_COLD = 2,
   CACHE_WARM = 3,
@@ -53,9 +58,17 @@ var REASON_EXIT = 1,
 
 /* ====================== GitProxyConnection ============================== */
 
-function GitProxyConnection(client) {
+function GitProxyConnection(protocol, connection) {
+  var gitproxy = this,
+    stream_endpoint = connection;
+  if (protocol == 'http') {
+    stream_endpoint = {read: connection.request, write: connection.response};
+  }
+
+  mylog.log(2, 'new stream: ' + node.util.inspect( stream_endpoint ) );
+
   this.client = {
-    stream: new GitStream(client),
+    stream: new GitStream(protocol, stream_endpoint),
     want: {}
   };
   this.server = {
@@ -67,10 +80,13 @@ function GitProxyConnection(client) {
     host: null,
     caps: []
   };
+  this.protocol = protocol;
+  if (this.protocol == 'http') {
+    this.http = connection;
+  }
   this.want = {};
   this.sidebandTwoFromServerToClient = [];
 
-  var gitproxy = this;
   this.client.stream.on('error', function (ex) {
     gitproxy.onClientSocketError(ex);
   });
@@ -114,6 +130,83 @@ GitProxyConnection.prototype.onClientSocketError = function (ex) {
   mylog.log(1, "client socket error: '" + ex + "', dropping connection");
   this.client.stream.destroy();
   this.server.stream.destroy();
+};
+
+GitProxyConnection.prototype.parseRequest = function (cb) {
+  var req = this.http.request,
+    url = req.url,
+    parsed = node.url.parse(url, true),
+    match;
+
+  this.server.port = parsed.port || 80;
+  this.server.host = parsed.hostname;
+
+  if (!this.server.host) {
+    return cb.call(this, 'Hostname missing from URL ' + url );
+  }
+
+  mylog.log(2, 'http proxy to host: ' + this.server.host);
+
+  if (req.method == 'GET') {
+    // git-upload-pack is only supported service;
+    // GETs are proxied with no special handling required here
+    if (!parsed.query.service || parsed.query.service != 'git-upload-pack') {
+      return cb.call(
+        this,
+        'URL ' + url + ' not handled; expect service=git-upload-pack'
+      );
+    }
+    return cb.call(this, undefined, 'get');
+  }
+  
+  if (req.method == 'POST') {
+    // POSTs are expected to be an application/x-git-upload-pack-request
+    // accepting an application/x-git-upload-pack-response
+    // example pathname: /rohanpm/ngitcached.git/info/refs
+    match = parsed.pathname.match( /^(.*)\/git-upload-pack$/ );
+    if (!match || match.length != 2) {
+      return cb.call(this, 'unrecognized path ' + parsed.pathname);
+    }
+    this.server.repo = match[1];
+
+    mylog.log(2, 'http proxy to repo: ' + this.server.repo);
+
+    return cb.call(this, undefined, 'post-git-upload-pack-request');
+  }
+
+  return cb.call(this, req.method + ' not supported');
+};
+
+GitProxyConnection.prototype.dispatchGetRequest = function (cb) {
+  this.doRobustHttpRequest(
+    node.url.parse(this.http.request.url),
+    {end: true},
+    function (error, request, response) {
+      cb.call(this, error, request, response);
+    }
+  );
+};
+
+GitProxyConnection.prototype.dispatchPostRequest = function (cb) {
+  var parsed = node.url.parse(this.http.request.url),
+    req;
+
+  req = node.http.request(
+    {
+      method: 'POST',
+      hostname: this.server.host,
+      path: this.server.repo + '/git-upload-pack',
+      port: this.server.port,
+      headers: {
+        'User-Agent': HTTP_USER_AGENT,
+        'Accept-Encoding': 'deflate, gzip',
+        'Content-Type': 'application/x-git-upload-pack-request',
+        'Accept': 'application/x-git-upload-pack-result'
+      }
+    }
+  );
+
+  return cb.call(this, undefined, req);
 };
 
 GitProxyConnection.prototype.handleClientChunk1 = function (message, cb) {
@@ -195,6 +288,104 @@ GitProxyConnection.prototype.handleClientChunk1 = function (message, cb) {
   cb: function (error, server_stream)
 */
 GitProxyConnection.prototype.startUploadPack = function (cb) {
+  if (this.protocol == 'http') {
+    return this.startHttpUploadPack(cb);
+  }
+  return this.startGitUploadPack(cb);
+};
+
+/*
+GitProxyConnection.prototype.startHttpUploadPack = function (cb) {
+  var connect,
+    gitproxy = this,
+    on_connected;
+
+  mylog.log(2, 'port ' + this.server.port + ' host ' + this.server.host);
+
+  on_connected = function (req, resp) {
+    mylog.log(2, 'connect returned');
+    gitproxy.server.stream = new GitStream('http', {request: req, response: resp});
+    cb.call(this, undefined, gitproxy.server.stream);
+  };
+
+  connect = function (cb2) {
+    var req;
+    req = node.http.request(
+      {
+        hostname: gitproxy.server.host,
+        port: gitproxy.server.port,
+        path: gitproxy.server.repo + '/info/refs?service=git-upload-pack',
+        headers: {
+          'User-Agent': HTTP_USER_AGENT
+        }
+      },
+      function (resp) {
+        cb2.call(this, req, resp);
+      }
+    );
+    req.end();
+    return req;
+  };
+
+  myutil.robustly({
+    label: 'connect to ' + gitproxy.server.host,
+    maxtime: 180 * 1000,
+    fn: connect,
+    fn_on_complete: on_connected,
+    fn_on_error: function (ex) {
+      mylog.log(2, 'gitstream connect error: ' + ex);
+      return 2;
+    },
+    fn_on_give_up: function (ctx, ex) {
+      cb.call(this, ex);
+    }
+  });
+};
+*/
+
+GitProxyConnection.prototype.doRobustHttpRequest = function (request_options, other_options, cb) {
+  var connect,
+    gitproxy = this,
+    on_connected,
+    request_str = node.util.inspect( request_options ),
+    response;
+
+  connect = function (cb2) {
+    var req;
+    req = node.http.request(
+      request_options,
+      function (resp) {
+        response = resp;
+        cb2.call(this);
+      }
+    );
+    if (other_options.end) {
+      req.end();
+    }
+    return req;
+  };
+
+  on_connected = function (req) {
+    mylog.log(2, 'HTTP connected: ' + node.util.inspect({req:req,resp:response}));
+    cb.call(this, undefined, req, response);
+  };
+
+  myutil.robustly({
+    label: 'HTTP request ' + request_str,
+    maxtime: 180 * 1000,
+    fn: connect,
+    fn_on_complete: on_connected,
+    fn_on_error: function (ex) {
+      mylog.log(2, 'HTTP error: ' + ex);
+      return 2;
+    },
+    fn_on_give_up: function (ctx, ex) {
+      cb.call(this, ex);
+    }
+  });
+};
+
+GitProxyConnection.prototype.startGitUploadPack = function (cb) {
   var connect,
     gitproxy = this,
     on_connected;
@@ -203,7 +394,7 @@ GitProxyConnection.prototype.startUploadPack = function (cb) {
 
   on_connected = function (socket) {
     mylog.log(2, 'connect returned');
-    gitproxy.server.stream = new GitStream(socket);
+    gitproxy.server.stream = new GitStream('git', socket);
     gitproxy.server.stream.writeMessage(new Buffer(
       'git-upload-pack ' + gitproxy.server.repo + '\x00host='
         + gitproxy.server.host + '\x00'
@@ -501,7 +692,6 @@ GitProxyConnection.prototype.doLocalIndexPack = function (cb) {
     git_index_pack,
     index_pack_stderr_remaining,
     prefix,
-    client_socket = this.client.stream.socket(),
     conn_id = this.connectionId();
 
   mylog.log(2, 'spawning git index-pack');
@@ -584,15 +774,15 @@ GitProxyConnection.prototype.doLocalIndexPack = function (cb) {
   Returns a unique ID for this connection, safe for usage in filenames
 */
 GitProxyConnection.prototype.connectionId = function () {
-  var client_socket = this.client.stream.socket();
+  var client_socket = this.client.stream.readSocket();
   return client_socket.remoteAddress + '-' + client_socket.remotePort;
 };
 
 GitProxyConnection.prototype.connectionLabel = function () {
   var client_socket, connection_id;
 
-  client_socket = this.client.stream.socket();
-  connection_id = client_socket.remoteAddress + ':' + client_socket.remotePort;
+  client_socket = this.client.stream.readSocket();
+  connection_id = this.protocol + '-' + client_socket.remoteAddress + ':' + client_socket.remotePort;
 
   if (this.server && this.server.host) {
     connection_id = node.util.format(
@@ -667,8 +857,8 @@ GitProxyConnection.prototype.doLocalUploadPack = function (cb) {
     cb.call(gitproxy, 'write to git upload-pack: ' + error);
   });
 
-  stdout = new GitStream(git_upload_pack.stdout);
-  stdin = new GitStream(git_upload_pack.stdin);
+  stdout = new GitStream('git', git_upload_pack.stdout);
+  stdin = new GitStream('git', git_upload_pack.stdin);
 
   git_upload_pack.stderr.on('data', function (d) {
     mylog.log(2, 'git-upload-pack stderr: ' + d);
@@ -676,7 +866,6 @@ GitProxyConnection.prototype.doLocalUploadPack = function (cb) {
 
   git_upload_pack.on('exit', function () {
     mylog.log(2, 'git-upload-pack finished!');
-    gitproxy.client.stream.destroySoon();
     cb.call(gitproxy, undefined);
   });
 
@@ -736,9 +925,29 @@ GitProxyConnection.prototype.doLocalUploadPack = function (cb) {
 
 GitProxyConnection.prototype.fatalError = function (message) {
   mylog.trace(1, 'fatal error: ' + message);
-  try {
-    this.client.stream.writeMessage(new Buffer('ERR ' + message));
-  } catch (e) {
+
+  if (this.protocol == 'git') {
+    try {
+      this.client.stream.writeMessage(new Buffer('ERR ' + message));
+
+    } catch (e1) {
+    }
+
+    try {
+      this.client.stream.destroy( );
+    } catch (e2) {}
+
+    try {
+      this.server.stream.destroy( );
+    } catch (e3) {}
+  }
+
+  if (this.protocol == 'http') {
+    try {
+      this.http.response.statusCode = 500;
+      this.http.response.end(message);
+    } catch (e4) {
+    }
   }
 };
 
@@ -753,7 +962,9 @@ function gitProxyStateObject(fire) {
     pack_dir = 'objects/pack',
     out = {},
     count = 0,
-    cache_stat = CACHE_NO_OBJECTS_REQUESTED;
+    cache_stat = CACHE_NO_OBJECTS_REQUESTED,
+    type,
+    client_http_response;
 
   // FIXME: much of the time, fire.$event() silently does not work.
   // The reason is unclear.
@@ -777,15 +988,135 @@ function gitProxyStateObject(fire) {
     actions: {
       'api.dumpInfo': _.bind(dumpInfo, undefined, '(unknown state)'),
       // client may close connection at any time
-      'clientStream.end': 'Completed'
+      'clientStream.end': 'Completed',
+      'clientStream.error': '@error'
     }
   };
 
   out.states = {
 
+    start: {
+      entry: function (c) {
+        type = c.type;
+        if (type == 'git') {
+          return ['AwaitingClientChunk1', c.data];
+        }
+        if (type == 'http') {
+          // we're in the state machine, it's safe to enable events
+          c.data.request.resume();
+          return ['InitialHttpRequest', c.data.request, c.data.response];
+        }
+        return ['@error', "connections of type " + type + " are not supported"];
+      }
+    },
+
+    InitialHttpRequest: {
+      entry: function (request, response) {
+        conn = new GitProxyConnection('http', {request: request, response: response});
+        conn_id = conn.connectionId();
+        conn_label = conn.connectionLabel();
+        client_http_response = response;
+        fire.$addToLibrary('conn', conn);
+        fire.$regEmitter('clientStream', conn.client.stream, true);
+        fire.conn.parseRequest();
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'parsing HTTP request'),
+        'clientStream.message': '@defer',
+        'clientStream.end': '@defer',
+        'conn.parseRequest.done': function (type) {
+          if (type == 'get') {
+            return 'HttpGetConnectingToServer';
+          }
+          if (type == 'post-git-upload-pack-request') {
+            return 'HttpUploadPackConnectingToServer';
+          }
+          return ['@error', 'Unhandled connection type ' + type];
+        },
+        'conn.parseRequest.err': '@error'
+      }
+    },
+
+    HttpUploadPackConnectingToServer: {
+      entry: function () {
+        fire.conn.dispatchPostRequest();
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'POST connecting to server'),
+        'conn.dispatchPostRequest.err': '@error',
+        'conn.dispatchPostRequest.done': function (request, response) {
+          conn.server.stream = new GitStream('http', {read:'pending', write:request});
+          fire.$regEmitter( 'serverStream', conn.server.stream, true );
+          return 'ReadingClientWant';
+        }
+      }
+    },
+
+    HttpGetConnectingToServer: {
+      entry: function () {
+        fire.conn.dispatchGetRequest();
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'GET connecting to server'),
+        'clientStream.end': '@defer',
+        'conn.dispatchGetRequest.err': '@error',
+        'conn.dispatchGetRequest.done': function (request, response) {
+          /*
+            With an x-git-upload-pack-advertisement, we need to parse and rewrite the
+            capabilities line.  Any other GET can be proxied without parsing.
+          */
+          if (response.headers['content-type'] == 'application/x-git-upload-pack-advertisement') {
+            return ['HttpGetProxyUploadPackAdvertisement', request, response];
+          }
+          return ['HttpGetProxyResponse', request, response];
+        }
+      }
+    },
+
+    HttpGetProxyUploadPackAdvertisement: {
+      entry: function (request, response) {
+        conn.server.stream = new GitStream('http', {read:response, write:request});
+        fire.$regEmitter( 'serverStream', conn.server.stream );
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'proxying an x-git-upload-pack-advertisement (preamble)'),
+        'clientStream.end': '@defer',
+        'serverStream.message': function (msg) {
+          // Up to the first flush is sent as-is to client
+          conn.client.stream.write( msg.rawdata );
+        },
+        'serverStream.flush': function () {
+          // After this first flush, the HTTP and git handling is the same
+          return ['ReadingServerPreamble', conn.server.stream];
+        }
+      }
+    },
+
+    HttpGetProxyResponse: {
+      entry: function (request, response) {
+        fire.$regEmitter('server_resp', response);
+        client_http_response.writeHead(response.statusCode, response.headers);
+      },
+      actions: {
+        'api.dumpInfo': _.bind(dumpInfo, undefined, 'GET proxying'),
+        'clientStream.end': '@defer',
+        'server_resp.newListener': '@ignore',
+        'server_resp.data': function (data) {
+          mylog.log(2, 'proxy to client: ' + data);
+          client_http_response.write(data);
+        },
+        'server_resp.end': function () {
+          mylog.log(2, 'finished proxy to client');
+          client_http_response.end();
+          return 'Completed';
+        },
+        'clientStream.close': '@ignore'
+      }
+    },
+
     AwaitingClientChunk1: {
       entry: function (c) {
-        conn = new GitProxyConnection(c);
+        conn = new GitProxyConnection('git', c);
         conn_id = conn.connectionId();
         conn_label = conn.connectionLabel();
         fire.$addToLibrary('conn', conn);
@@ -797,7 +1128,7 @@ function gitProxyStateObject(fire) {
           fire.conn.handleClientChunk1(m);
         },
         'conn.handleClientChunk1.done': 'ConnectingToServer',
-        'conn.handleClientChunk1.err': 'FatalError'
+        'conn.handleClientChunk1.err': '@error'
       }
     },
 
@@ -810,7 +1141,6 @@ function gitProxyStateObject(fire) {
       actions: {
         'api.dumpInfo': _.bind(dumpInfo, undefined, 'connecting to server'),
         'conn.startUploadPack.err': function (ex) {
-          conn.fatalError('fatal error while connecting to server: ' + ex);
           return ['@error', 'while connecting to server: ' + ex];
         },
         'conn.startUploadPack.done': function (stream) {
@@ -825,11 +1155,18 @@ function gitProxyStateObject(fire) {
       },
       actions: {
         'api.dumpInfo': _.bind(dumpInfo, undefined, 'reading server preamble'),
+        'clientStream.end': '@defer',
         'serverStream.message': function (m) {
           fire.conn.readServerPreamble(m);
         },
         'conn.readServerPreamble.done': function () {
           conn.client.stream.writeFlush();
+          // In HTTP mode, this request is completed.
+          // The client will make a new request to actually transfer the objects.
+          if (type == 'http') {
+            conn.client.stream.end();
+            return 'Completed';
+          }
           return 'ReadingClientWant';
         }
       }
@@ -841,6 +1178,7 @@ function gitProxyStateObject(fire) {
         'clientStream.message': function (m) {
           fire.conn.readClientWant(m);
         },
+        'clientStream.close': 'Completed',
         'conn.readClientWant.done': 'WritingServerWant',
         'conn.readClientWant.err': function (ex) {
           return ['@error', 'while reading client want: ' + ex];
@@ -859,6 +1197,7 @@ function gitProxyStateObject(fire) {
       },
       actions: {
         'api.dumpInfo': _.bind(dumpInfo, undefined, 'writing server WANT'),
+        'clientStream.close': 'Completed',
         'conn.writeServerWant.done': function (count) {
           // No want?  Then drop server connection, skip straight to UpdateRefs.
           // This is an entirely hot request (100% from cache)
@@ -897,6 +1236,7 @@ function gitProxyStateObject(fire) {
       actions: {
         'api.dumpInfo': _.bind(dumpInfo, undefined, 'receiving git objects from server'),
         'conn.doLocalIndexPack.done': 'UpdatingProxyRefs',
+        'serverStream.error': '@error',
         // these are handled internally
         'serverStream.message': '@ignore',
         'serverStream.sideband1': '@ignore',
@@ -915,6 +1255,8 @@ function gitProxyStateObject(fire) {
       },
       actions: {
         'api.dumpInfo': _.bind(dumpInfo, undefined, 'updating refs on proxy'),
+        'clientStream.close': 'Completed',
+        'clientStream.end': '@defer',
         'conn.updateRefs.done': 'SendingPack'
       }
     },
@@ -937,6 +1279,7 @@ function gitProxyStateObject(fire) {
     WaitingClientClose: {
       actions: {
         'api.dumpInfo': _.bind(dumpInfo, undefined, 'waiting for client to close connection'),
+        'clientStream.end': '@ignore',
         'clientStream.close': 'CleaningKeepFiles'
       }
     },
@@ -948,6 +1291,7 @@ function gitProxyStateObject(fire) {
       },
       actions: {
         'api.dumpInfo': _.bind(dumpInfo, undefined, 'cleaning up .keep files'),
+        'clientStream.end': '@defer',
 
         'fs.readdir.done': function (files) {
           var that = this;
@@ -1035,6 +1379,7 @@ function gitProxyStateObject(fire) {
       actions: {
         'api.dumpInfo': _.bind(dumpInfo, undefined, '(finished)'),
         'clientStream.close': '@ignore',
+        'serverStream.end': '@ignore',
         'exit': function () {
           return ['@exit', undefined, cache_stat];
         }
@@ -1046,17 +1391,8 @@ function gitProxyStateObject(fire) {
         if (error == undefined) {
           error = 'unknown error';
         }
-
         warn( 'dropping connection: ' + error );
-
-        try {
-          conn.client.stream.destroy( );
-        } catch (e1) {}
-
-        try {
-          conn.server.stream.destroy( );
-        } catch (e2) {}
-
+        conn.fatalError( error );
         return ['@exit', error];
       },
 
@@ -1069,7 +1405,7 @@ function gitProxyStateObject(fire) {
 
   };
 
-  out.startState = 'AwaitingClientChunk1';
+  out.startState = 'start';
   out.api = ['dumpInfo'];
 
   return out;
@@ -1113,7 +1449,9 @@ function GitProxy() {
     hot: 0,
     warm: 0,
     cold: 0,
-    no_objects: 0
+    no_objects: 0,
+    git: 0,
+    http: 0
   };
 }
 
@@ -1122,7 +1460,7 @@ GitProxy.prototype.constructor = GitProxy;
 
 GitProxy.prototype.handleConnect = function (c) {
   var sm = this.factory.spawn(c);
-  this.recordConnectionInProgress();
+  this.recordConnectionInProgress(c);
   sm.on('exit', _.bind(this.recordConnectionComplete, this));
   sm.on('error', function (error) {
     mylog.trace(0, 'Error (likely bug): ' + error);
@@ -1132,8 +1470,29 @@ GitProxy.prototype.handleConnect = function (c) {
   });
 };
 
-GitProxy.prototype.recordConnectionInProgress = function () {
+GitProxy.prototype.handleGitConnect = function (c) {
+  return this.handleConnect({type:'git', data:c});
+};
+
+GitProxy.prototype.handleHttpConnect = function (request, response) {
+  // make sure no data is emitted until the state machine has started
+  request.pause();
+  return this.handleConnect({
+    type:'http',
+    data: {
+      request: request,
+      response: response
+    }
+  });
+};
+
+GitProxy.prototype.handleHttpsConnect = function (c) {
+  mylog.trace(0, 'https not yet implemented');
+};
+
+GitProxy.prototype.recordConnectionInProgress = function (c) {
   ++this.stats.in_progress;
+  ++this.stats[c.type];
 };
 
 GitProxy.prototype.recordConnectionComplete = function (error, warmth) {
@@ -1158,6 +1517,8 @@ GitProxy.prototype.recordConnectionComplete = function (error, warmth) {
 GitProxy.prototype.dumpStats = function () {
   var out = node.util.format(
     "========================== Connection statistics: =====================\n"
+   +" Total git:// requests:    %d\n"
+   +" Total http:// requests:   %d\n"
    +" In progress:              %d\n"
    +" Completed (successful):   %d\n"
    +" Completed (with error):   %d\n"
@@ -1165,6 +1526,8 @@ GitProxy.prototype.dumpStats = function () {
    +" Warm requests:            %d\n"
    +" Cold requests:            %d\n"
    +" Requests with no objects: %d",
+    this.stats.git,
+    this.stats.http,
     this.stats.in_progress,
     this.stats.successful,
     this.stats.error,
