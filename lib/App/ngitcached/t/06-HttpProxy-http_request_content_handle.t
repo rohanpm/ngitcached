@@ -2,6 +2,8 @@ use strict;
 use warnings;
 
 use AnyEvent::HTTP;
+use Coro::AnyEvent;
+use Coro;
 use Sub::Override;
 use Test::Exception;
 use Test::More;
@@ -9,20 +11,8 @@ use Test::NoWarnings;
 
 use FindBin;
 use lib "$FindBin::Bin/../../..";
-use App::ngitcached::Coro;
 use App::ngitcached::HttpProxy qw( http_request_content_handle );
-
-sub blocking_read
-{
-    my ($h, @args) = @_;
-
-    $h->unshift_read(
-        @args,
-        nrouse_cb()
-    );
-
-    return nrouse_wait();
-}
+use App::ngitcached::Proxy qw( bread );
 
 sub mock_http
 {
@@ -101,26 +91,26 @@ sub test_http_request_content_handle
         my $eof_cv = AE::cv;
         $r_http->on_eof( $eof_cv->send(1) );
 
-        my @result = blocking_read( $r_http, chunk => 4 );
-        is( $result[0], $r_http );
-        is( $result[1], '1234' );
+        my @result = bread( $r_http, chunk => 4 );
+        is( $result[0], $r_http, 'correct handle' );
+        is( $result[1], '1234', 'correct data [1]' );
 
-        @result = blocking_read( $r_http, chunk => 4 );
-        is( $result[0], $r_http );
-        is( $result[1], '5678' );
+        @result = bread( $r_http, chunk => 4 );
+        is( $result[0], $r_http, 'correct handle' );
+        is( $result[1], '5678', 'correct data[2]' );
 
         # We should now get an EOF
-        ok( $eof_cv->recv() );
-
+        ok( $eof_cv->recv(), 'EOF received' );
+        
         # Reading should fail
         throws_ok {
-            blocking_read( $r_http, chunk => 4 );
+            bread( $r_http, chunk => 4 );
         } qr{Broken pipe}, 'read fails with broken pipe';
 
         # All chunks written
         is( $mock->{ chunks }, 4 );
     }
-
+    
     # cancel/abort
     {
         my $mock = mock_http(
@@ -129,8 +119,7 @@ sub test_http_request_content_handle
             }
         );
         http_request_content_handle( GET => 'http://example.com/quux' );
-        my $w = AE::timer 1, 0, nrouse_cb();
-        nrouse_wait();
+        Coro::AnyEvent::sleep 1;
         ok( $mock->{ chunks } < 4, 'not all chunks processed' );
         ok( $mock->{ aborted }, 'http request was aborted' );
     }

@@ -5,7 +5,6 @@ use strict;
 use warnings;
 
 use AnyEvent::Handle;
-use App::ngitcached::Coro;
 use Carp;
 use Const::Fast;
 use Coro;
@@ -35,6 +34,8 @@ const my $TIMEOUT => 3;
 
 sub generic_handle_error_cb
 {
+    my ($cv) = @_;
+
     my $coro = $Coro::current;
 
     my (@caller) = caller();
@@ -55,7 +56,21 @@ sub generic_handle_error_cb
 
         $msg = "$type on handle $name$msg";
 
-        nrouse_die( $coro, $msg );
+        if ($cv && !$cv->ready()) {
+            AE::log trace => "sending to cv: $msg";
+            $cv->croak( $msg );
+            # if the same error happens again, it is unexpected (ignored)
+            undef $cv;
+        } elsif ($coro && !$coro->is_zombie()) {
+            if ($Coro::current == $coro) {
+                AE::log trace => "raising: $msg";
+                die $msg;
+            }
+            AE::log trace => "coro $Coro::current->{ desc } sending to coro $coro->{ desc }: $msg";
+            $coro->throw( $msg );
+        } else {
+            warn "Unexpected $msg\n  This may be a bug in ngitcached.\n";
+        }
     }
 }
 
@@ -71,7 +86,7 @@ sub ae_handle
 
 sub ae_handle_pipe
 {
-    my ($name) = @_;
+    my ($name, $cv) = @_;
     $name //= '(unknown handle)';
 
     my ($r_fh, $w_fh);
@@ -80,12 +95,12 @@ sub ae_handle_pipe
     my $r_h = ae_handle(
         "$name internal pipe (reader)",
         fh => $r_fh,
-        on_error => generic_handle_error_cb(),
+        on_error => generic_handle_error_cb( $cv ),
     );
     my $w_h = ae_handle(
         "$name internal pipe (writer)",
         fh => $w_fh,
-        on_error => generic_handle_error_cb(),
+        on_error => generic_handle_error_cb( $cv ),
     );
 
     return ($r_h, $w_h);
@@ -104,14 +119,21 @@ sub bread
     }
     $timeout ||= 60*60*24;
 
+    my $cv = AE::cv();
+    my $error_cb = generic_handle_error_cb( $cv );
+
     $h->timeout( $timeout );
+    $h->on_error( sub {
+        $error_cb->( @_ );
+        $h->destroy();
+    });
 
     $h->unshift_read(
         @params,
-        nrouse_cb(),
+        sub { $cv->send( @_ ) },
     );
 
-    return nrouse_wait();
+    return $cv->recv();
 }
 
 sub io_or_die

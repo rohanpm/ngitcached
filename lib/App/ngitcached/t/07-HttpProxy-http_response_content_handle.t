@@ -5,11 +5,10 @@ use AnyEvent::HTTP;
 use Sub::Override;
 use Test::Exception;
 use Test::More;
-#use Test::NoWarnings;
+use Test::NoWarnings;
 
 use FindBin;
 use lib "$FindBin::Bin/../../..";
-use App::ngitcached::Coro;
 use App::ngitcached::HttpProxy qw( http_response_content_handle );
 use App::ngitcached::Proxy;
 
@@ -18,22 +17,16 @@ sub test_http_response_content_handle
     # basic success
     {
         my ($r_h, $w_h) = ae_handle_pipe( 'test pipe' );
-        my $cb = nrouse_cb();
-        my $h_http = http_response_content_handle(
+        my ($h_http, $cv) = http_response_content_handle(
             $w_h,
             headers => {
                 'Content-Type' => 'application/x-git-upload-pack-advertisement',
                 Pragma => 'no-cache',
                 'Cache-Control' => 'no-cache, max-age=0, must-revalidate',
             },
-            $cb
         );
 
         my @result;
-        
-        throws_ok {
-            bread( {in=>$r_h,timeout=>0.4}, regex => qr{\r\n} );
-        } qr{\btimed out\b};
         
         $h_http->push_write( 'x' x 100000 );
         $h_http->push_shutdown();
@@ -69,7 +62,7 @@ END_HEADER
             }
         } qr{\btest pipe\b.*\binternal pipe\b.*\bBroken pipe\b};
 
-        nrouse_wait( $cb );
+        $cv->recv();
     }
 }
 

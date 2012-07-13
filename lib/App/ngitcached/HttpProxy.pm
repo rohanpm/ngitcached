@@ -4,7 +4,6 @@ use 5.010;
 use strict;
 use warnings;
 
-use App::ngitcached::Coro;
 use App::ngitcached::Proxy;
 use App::ngitcached;
 use parent 'App::ngitcached::Proxy';
@@ -116,7 +115,8 @@ sub http_request_content_handle
     }
 
     my $label = "http $method $url ->";
-    my ($r_h, $w_h) = ae_handle_pipe( $label );
+    my $cv = AE::cv();
+    my ($r_h, $w_h) = ae_handle_pipe( $label, $cv );
 
     # Once the reader is destroyed, we can also destroy the writer
     $r_h->{ ngitcached_kill_other_end } = guard {
@@ -127,8 +127,6 @@ sub http_request_content_handle
     my $weak_r_h = $r_h;
     weaken( $weak_r_h );
 
-    my $coro = $Coro::current;
-    my $cb = nrouse_cb();
     my $got_data;
 
     AE::log debug => "calling http_request $method => $url";
@@ -150,13 +148,13 @@ sub http_request_content_handle
 
             eval { bwrite( $w_h, $data ) };
             if (my $error = $EVAL_ERROR) {
-                nrouse_die( $coro, $error );
+                $cv->croak( $error );
                 AE::log debug => "$label aborting, error: '$error'";
                 return;
             }
             if (!$got_data) {
                 $got_data = 1;
-                $cb->( $headers );
+                $cv->send( $headers );
             }
             return 1;
         },
@@ -172,18 +170,18 @@ sub http_request_content_handle
             if ($w_h) {
                 eval { bshutdown( $w_h ) };
                 if (my $error = $EVAL_ERROR) {
-                    return nrouse_die( $coro, $error );
+                    return $cv->croak( $error );
                 }
             }
 
             if (!$got_data) {
-                $cb->( $headers );
+                $cv->send( $headers );
             }
         }
     );
 
     AE::log debug => "$label: waiting for response headers...\n";
-    my ($headers) = nrouse_wait( );
+    my ($headers) = $cv->recv();
     AE::log debug => "$label: got response headers\n";
 
     # Note: we deliberately follow redirects proxy-side to support
@@ -212,11 +210,8 @@ sub http_request_content_handle
 
 sub http_response_content_handle
 {
-    my ($h_http, @rest) = @_;
-    my $cb = pop @rest;
-    my %params = @rest;
-
-    my $coro = $Coro::current;
+    my ($h_http, %params) = @_;
+    my $cv = AE::cv();
 
     my ($r_h, $w_h) = ae_handle_pipe( '-> http response' );
 
@@ -236,7 +231,7 @@ sub http_response_content_handle
             bwrite( $h_http, $data );
         };
         if (my $error = $EVAL_ERROR) {
-            nrouse_die( $coro, $error );
+            $cv->send( $error );
         }
         return;
     };
@@ -271,7 +266,7 @@ sub http_response_content_handle
         $push_write->( "0\r\n\r\n" );
         push_end( $h_http );
 
-        $cb->();
+        $cv->send();
     };
 
     $r_h->on_read( $write_response_cb );
@@ -280,7 +275,7 @@ sub http_response_content_handle
     # The reading end should live as long as the writing end.
     $w_h->{ ngitcached_other_pipe_end } = $r_h;
 
-    return $w_h;
+    return ($w_h, $cv);
 }
 
 sub protocol

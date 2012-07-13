@@ -4,7 +4,6 @@ use 5.010;
 use strict;
 use warnings;
 
-use App::ngitcached::Coro;
 use App::ngitcached::Proxy;
 use parent 'App::ngitcached::Proxy';
 
