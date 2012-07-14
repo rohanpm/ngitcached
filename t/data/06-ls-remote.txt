@@ -1,8 +1,11 @@
 # Start git daemon and ngitcached ...
 start_ngitcached --git-port 10231 --http-port 11231
-#out0: Initialized empty Git repository in %TEMPDIR%/cache/
-#out0: ngitcached git:// proxy listening on port 10231
-#out0: ngitcached http:// proxy listening on port 11231
+NGITCACHED_PORT=10231
+GIT_PROXY_COMMAND="%TESTDIR%/do_proxy"
+export NGITCACHED_PORT GIT_PROXY_COMMAND
+
+out0: Listening on 10231 for git connections
+out0: Listening on 11231 for http connections
 
 cd /
 git daemon --reuseaddr --export-all --port=10232 %TEMPDIR% &
@@ -17,10 +20,10 @@ git commit -m 'commit 1'
 COMMIT1=$(git rev-parse HEAD)
 
 # ls-remote via proxy, git and http
-( git ls-remote git://127.0.0.1:10231/?remote=127.0.0.1:10232%TEMPDIR%/repo1 > ls-remote.log )
+( git ls-remote git://127.0.0.1:10232%TEMPDIR%/repo1 > ls-remote.log )
 grep $COMMIT1 ls-remote.log
 ( http_proxy=127.0.0.1:11231 git ls-remote http://127.0.0.1:10233/repo1 > ls-remote.log )
 grep $COMMIT1 ls-remote.log
 
 stop_ngitcached
-out0: Exiting gracefully due to signal.
+out0: Terminating due to signal.

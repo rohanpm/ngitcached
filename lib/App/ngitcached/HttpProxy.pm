@@ -9,16 +9,18 @@ use App::ngitcached;
 use parent 'App::ngitcached::Proxy';
 use parent 'Exporter';
 
+use AnyEvent::HTTP qw();
 use AnyEvent::Handle;
 use AnyEvent::Socket;
-use AnyEvent::HTTP qw();
+use Const::Fast;
+use Data::Dumper;
 use English qw( -no_match_vars );
+use Guard;
 use HTTP::Request;
 use HTTP::Response;
 use HTTP::Status qw( :constants );
-use Const::Fast;
+use List::MoreUtils qw( any );
 use Scalar::Util qw( weaken );
-use Guard;
 
 # Note: some servers (github.com) won't work correctly unless 'git/...' is the
 # first thing in the User-Agent string.
@@ -40,9 +42,7 @@ sub read_http_headers
 {
     my ($h) = @_;
 
-    my (undef, $http) = bread( $h, regex => qr{\r\n\r\n} );
-
-    return $http;
+    return bread( $h, regex => qr{\r\n\r\n} );
 }
 
 sub read_http_request
@@ -371,6 +371,7 @@ sub handle_http_get
 
     # First line should be the service ...
     my $s_service = $read_git_pkt->();
+    AE::log debug => "read first packet: '$s_service'\n";
     write_git_pkt( $h_client_git, $s_service );
     chomp $s_service;
     if ($s_service ne '# service=git-upload-pack') {
@@ -380,6 +381,12 @@ sub handle_http_get
     # Then a flush
     $read_git_pkt->();
     write_git_pkt( $h_client_git );
+
+    # Then HEAD and caps
+    my $pkt = $read_git_pkt->();
+    ($pkt) || die { HTTP_BAD_GATEWAY() => 'no HEAD/caps pkt from server' };
+
+    write_git_pkt( $h_client_git, rewrite_capabilities( $pkt ) );
 
     # Then read until next flush
     while (my $pkt = $read_git_pkt->()) {
@@ -396,9 +403,42 @@ sub handle_http_get
     return;
 }
 
+sub handle_from_post_data
+{
+    my ($h, $request) = @_;
+
+    my $length = $request->header( 'Content-Length' );
+    if (!$length) {
+        die { HTTP_BAD_REQUEST() => 'Content-Length is required' };
+    }
+    if ($length > 1000000) {
+        die { HTTP_BAD_REQUEST() => 'Content-Length is too large' };
+    }
+
+    my $data = bread( $h, chunk => $length );
+
+    AE::log trace => "POST data: '$data'";
+
+    my ($r_h, $w_h) = ae_handle_pipe( 'POST data' );
+    $w_h->push_write( $data );
+    $w_h->push_shutdown( );
+    return $r_h;
+}
+
 sub handle_http_post
 {
     my ($self, $h, $request) = @_;
+
+    AE::log trace => sub { 'incoming POST: ' . Dumper( $request ) };
+
+    my $h_postdata = handle_from_post_data( $h, $request );
+
+    my $client = read_client_want( $h_postdata );
+
+    # then haves
+    $client = { %{ $client } , %{ read_client_have( $h_postdata ) } };
+
+    AE::log info => sub { 'git-upload-pack request: '.Dumper( $client ) };
 
     die { HTTP_NOT_IMPLEMENTED() => 'not yet implemented' };
 }

@@ -91,13 +91,11 @@ sub test_http_request_content_handle
         my $eof_cv = AE::cv;
         $r_http->on_eof( $eof_cv->send(1) );
 
-        my @result = bread( $r_http, chunk => 4 );
-        is( $result[0], $r_http, 'correct handle' );
-        is( $result[1], '1234', 'correct data [1]' );
+        my $result = bread( $r_http, chunk => 4 );
+        is( $result, '1234', 'correct data [1]' );
 
-        @result = bread( $r_http, chunk => 4 );
-        is( $result[0], $r_http, 'correct handle' );
-        is( $result[1], '5678', 'correct data[2]' );
+        $result = bread( $r_http, chunk => 4 );
+        is( $result, '5678', 'correct data[2]' );
 
         # We should now get an EOF
         ok( $eof_cv->recv(), 'EOF received' );

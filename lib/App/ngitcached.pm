@@ -46,11 +46,17 @@ sub run_proxies
 
     my $cv = AE::cv( );
     my $on_signal = sub {
-        warn "Terminating due to signal\n";
+        print "Terminating due to signal.\n";
         undef $git_server;
         undef $http_server;
         $cv->send( );
     };
+
+    my @w =
+        map {
+            AE::signal( $_ => $on_signal )
+        } qw(TERM INT);
+    
     $cv->recv( );
 
     return;

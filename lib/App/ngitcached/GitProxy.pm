@@ -71,7 +71,11 @@ sub process_git_connection
     );
     write_git_pkt( $s_h, $service_pkt );
 
-    while (my $pkt = read_git_pkt( $s_h )) {
+    my $pkt = read_git_pkt( $s_h );
+    $pkt || die "unexpected flush pkt\n";
+    write_git_pkt( $h, rewrite_capabilities( $pkt ) );
+
+    while ($pkt = read_git_pkt( $s_h )) {
         write_git_pkt( $h, $pkt );
     }
     write_git_pkt( $h );

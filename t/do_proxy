@@ -1,0 +1,5 @@
+#!/bin/sh
+if [ "x$NGITCACHED_PORT" = "x" ]; then
+    NGITCACHED_PORT=39418
+fi
+exec nc 127.0.0.1 $NGITCACHED_PORT

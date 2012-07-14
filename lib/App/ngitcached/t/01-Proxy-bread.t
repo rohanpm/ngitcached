@@ -15,8 +15,7 @@ sub test_bread
     {
         my ($r, $w) = ae_handle_pipe( 'pipe_success' );
         $w->push_write( "hi there\n" );
-        my ($h, $line) = bread( $r, 'line' );
-        is( $h, $r );
+        my $line = bread( $r, 'line' );
         is( $line, 'hi there' );
     }
 
@@ -35,12 +34,6 @@ sub test_bread
         throws_ok {
             bread( {in=>$r,timeout=>1}, chunk => 10 );
         } qr{\btimed out\b}, 'times out as expected (not enough data)';
-
-
-        # verify the data can still be read
-#        my ($h, $data) = bread( {in=>$r,timeout=>1}, chunk => 6 );
-#        is( $h, $r );
-#        is( $data, '012345' );
     }
 
     # error in some other handle via generic_handle_error_cb

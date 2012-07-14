@@ -174,6 +174,7 @@ sub test_one_data
 
             my $ngitcached_fh = $context{ ngitcached }{ fh };
             my $actual_line = timed_readline $ngitcached_fh;
+            $actual_line ||= q{};
             chomp $actual_line;
             is( $actual_line, $text, "${datafile}:${i} `out' match" ) || last;
             next;

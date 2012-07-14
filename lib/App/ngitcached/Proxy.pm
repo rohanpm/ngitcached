@@ -21,14 +21,22 @@ our @EXPORT = qw(
     bwrite
     generic_handle_error_cb
     push_end
+    read_client_have
+    read_client_want
     read_git_pkt
     safe_hex
     write_git_pkt
+    rewrite_capabilities
+    %CAPABILITIES
 );
 
-const my $OK => 1;
-const my $ERROR => 2;
-const my $TIMEOUT => 3;
+const our %CAPABILITIES => map { $_ => 1 } qw(
+    thin-pack
+    no-progress
+    include-tag
+    side-band
+    side-band-64k
+);
 
 #==================== static ==================================================
 
@@ -133,7 +141,8 @@ sub bread
         sub { $cv->send( @_ ) },
     );
 
-    return $cv->recv();
+    my (undef, $data) = $cv->recv();
+    return $data;
 }
 
 sub io_or_die
@@ -210,7 +219,7 @@ sub read_git_pkt
 {
     my ($h) = @_;
 
-    my (undef, $hex_length) = bread( $h, chunk => 4 );
+    my $hex_length = bread( $h, chunk => 4 );
     my $length = safe_hex( $hex_length );
 
     if ($length == 0) {
@@ -231,8 +240,7 @@ sub read_git_pkt
         return;
     }
 
-    my (undef, $out) = bread( $h, chunk => $length );
-    return $out;
+    return bread( $h, chunk => $length );
 }
 
 # Write a git pkt to $h
@@ -254,6 +262,80 @@ sub write_git_pkt
     bwrite( $h, "$hex_length$data" );
 
     return;
+}
+
+sub rewrite_capabilities
+{
+    my ($pkt) = @_;
+
+    my ($ref, $in_caps) = split( /\x00/, $pkt, 2 );
+    chomp $in_caps;
+
+    my @in_caps = split( / /, $in_caps );
+    my @out_caps = grep { exists $CAPABILITIES{ $_ } } @in_caps;
+
+    return "$ref\x00@out_caps\n";
+}
+
+sub read_client_want
+{
+    my ($h) = @_;
+
+    my $out = { want => {}, caps => {} };
+
+    while (my $pkt = read_git_pkt( $h )) {
+        chomp( $pkt );
+        if (
+            $pkt !~ m{
+                \A
+                want[ ]
+                ([0-9a-f]{40})  # wanted SHA1
+                (?: [ ](.+))?   # capabilities
+                \z
+            }xms
+        ) {
+            die "git pkt '$pkt' is not a valid 'want'";
+        }
+
+        $out->{ want }{ $1 } = 1;
+        if ($2) {
+            $out->{ caps } = {
+                map { $_ => 1 } split( / /, $2 )
+            };
+        }
+    }
+
+    return $out;
+}
+
+sub read_client_have
+{
+    my ($h) = @_;
+
+    my $out = { have => {} };
+
+    while (my $pkt = read_git_pkt( $h )) {
+        chomp( $pkt );
+
+        if ($pkt eq 'done') {
+            last;
+        }
+
+        if (
+            $pkt !~ m{
+                \A
+                have[ ]
+                ([0-9a-f]{40})  # wanted SHA1
+                \z
+            }xms
+        ) {
+            die "git pkt '$pkt' is not a valid 'have'";
+        }
+
+        $out->{ have }{ $1 } = 1;
+    }
+
+    return $out;
 }
 
 #=================== instance =================================================
