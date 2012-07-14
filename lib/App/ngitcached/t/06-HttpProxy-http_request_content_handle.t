@@ -88,18 +88,12 @@ sub test_http_request_content_handle
         );
         my $r_http = http_request_content_handle( GET => 'http://example.com/quux' );
 
-        my $eof_cv = AE::cv;
-        $r_http->on_eof( $eof_cv->send(1) );
-
         my $result = bread( $r_http, chunk => 4 );
         is( $result, '1234', 'correct data [1]' );
 
         $result = bread( $r_http, chunk => 4 );
-        is( $result, '5678', 'correct data[2]' );
+        is( $result, '5678', 'correct data [2]' );
 
-        # We should now get an EOF
-        ok( $eof_cv->recv(), 'EOF received' );
-        
         # Reading should fail
         throws_ok {
             bread( $r_http, chunk => 4 );

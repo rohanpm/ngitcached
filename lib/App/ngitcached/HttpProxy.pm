@@ -105,6 +105,8 @@ sub write_http_error
     return;
 }
 
+
+
 sub http_request_content_handle
 {
     my ($method, $url, %request_params) = @_;
@@ -138,7 +140,7 @@ sub http_request_content_handle
         on_body => sub {
             my ($data, $headers) = @_;
 
-            AE::log trace => "$label body: '$data'\n";
+            AE::log trace => sub { printable("$label body: '$data'\n") };
 
             # Abort as soon as the read handle is discarded
             if (!$weak_r_h || !$w_h) {
@@ -164,7 +166,7 @@ sub http_request_content_handle
 
             AE::log trace => sub {
                 my $pdata = $data ? "'$data'" : '(no data)';
-                "$label complete: $pdata\n";
+                printable("$label complete: $pdata\n");
             };
 
             if ($w_h) {
@@ -226,7 +228,7 @@ sub http_response_content_handle
 
     my $push_write = sub {
         my ($data) = @_;
-        AE::log trace => "http response write: $data";
+        AE::log trace => sub { printable("http response write: $data") };
         eval {
             bwrite( $h_http, $data );
         };
@@ -417,7 +419,7 @@ sub handle_from_post_data
 
     my $data = bread( $h, chunk => $length );
 
-    AE::log trace => "POST data: '$data'";
+    AE::log trace => sub { printable("POST data: '$data'") };
 
     my ($r_h, $w_h) = ae_handle_pipe( 'POST data' );
     $w_h->push_write( $data );
@@ -440,7 +442,45 @@ sub handle_http_post
 
     AE::log info => sub { 'git-upload-pack request: '.Dumper( $client ) };
 
-    die { HTTP_NOT_IMPLEMENTED() => 'not yet implemented' };
+    my $request_body;
+    
+    # reply all wants
+    my $suffix = ' '.join( ' ', keys %{ $client->{ caps } } );
+    foreach my $want ( keys %{ $client->{ want } } ) {
+        write_git_pkt( \$request_body, "want $want$suffix\n" );
+        $suffix = q{};
+    }
+    write_git_pkt( \$request_body );
+
+    # then haves
+    foreach my $have ( keys %{ $client->{ have } } ) {
+        write_git_pkt( \$request_body, "have $have\n" );
+    }
+    write_git_pkt( \$request_body, "done\n" );
+
+    my $server_request_h = http_request_content_handle(
+        POST => $request->uri(),
+        body => $request_body,
+        headers => {
+            'User-Agent' => $HTTP_USER_AGENT,
+            'Content-Type' => $request->header( 'Content-Type' ),
+            'Accept' => $request->header( 'Accept' ),
+        },
+    );
+
+    my ($h_client_git, $response_cv) = http_response_content_handle(
+        $h,
+        headers => {
+            'Content-Type' => 'application/x-git-upload-pack-result',
+            Pragma => 'no-cache',
+            'Cache-Control' => 'no-cache, max-age=0, must-revalidate',
+        }
+    );
+
+    pump( $server_request_h, $h_client_git )->recv();
+    $response_cv->recv();
+
+    return;
 }
 
 1;

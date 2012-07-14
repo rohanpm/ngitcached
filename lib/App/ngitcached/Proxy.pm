@@ -14,20 +14,22 @@ use Guard;
 use parent 'Exporter';
 
 our @EXPORT = qw(
+    %CAPABILITIES
     ae_handle
     ae_handle_pipe
     bread
     bshutdown
     bwrite
     generic_handle_error_cb
+    printable
+    pump
     push_end
     read_client_have
     read_client_want
     read_git_pkt
+    rewrite_capabilities
     safe_hex
     write_git_pkt
-    rewrite_capabilities
-    %CAPABILITIES
 );
 
 const our %CAPABILITIES => map { $_ => 1 } qw(
@@ -39,6 +41,46 @@ const our %CAPABILITIES => map { $_ => 1 } qw(
 );
 
 #==================== static ==================================================
+
+sub printable
+{
+    my ($data) = @_;
+    $data =~ s{[^\x01-x7f]}{.}g;
+    return $data;
+}
+
+sub pump
+{
+    my ($from, $to) = @_;
+
+    my $cv = AE::cv();
+
+    $from->on_error( generic_handle_error_cb( $cv ) );
+    $to->on_error( generic_handle_error_cb( $cv ) );
+
+    $from->on_read(
+        sub {
+            my ($h) = @_;
+            $to->push_write( $h->{ rbuf } );
+            $h->{ rbuf } = q{};
+        }
+    );
+
+    $from->on_eof(
+        sub {
+            eval {
+                bshutdown( $to );
+            };
+            if (my $error = $EVAL_ERROR) {
+                $cv->croak( $error );
+            } else{
+                $cv->send();
+            }
+        }
+    );
+
+    return $cv;
+}
 
 sub generic_handle_error_cb
 {
@@ -65,16 +107,16 @@ sub generic_handle_error_cb
         $msg = "$type on handle $name$msg";
 
         if ($cv && !$cv->ready()) {
-            AE::log trace => "sending to cv: $msg";
+            AE::log debug => "sending to cv: $msg";
             $cv->croak( $msg );
             # if the same error happens again, it is unexpected (ignored)
             undef $cv;
         } elsif ($coro && !$coro->is_zombie()) {
             if ($Coro::current == $coro) {
-                AE::log trace => "raising: $msg";
+                AE::log debug => "raising: $msg";
                 die $msg;
             }
-            AE::log trace => "coro $Coro::current->{ desc } sending to coro $coro->{ desc }: $msg";
+            AE::log debug => "coro $Coro::current->{ desc } sending to coro $coro->{ desc }: $msg";
             $coro->throw( $msg );
         } else {
             warn "Unexpected $msg\n  This may be a bug in ngitcached.\n";
@@ -91,6 +133,24 @@ sub ae_handle
 
     return $out;
 }
+
+#sub ae_handle_to_buffer
+#{
+#    my ($r, $w) = ae_handle_pipe( 'buffer' );
+#
+#    my $cv = AE::cv( );
+#    my $buf = q{};
+#
+#    $r->on_read(
+#        sub {
+#            my ($h) = @_;
+#            $buf .= $h->{ rbuf };
+#            $h->{ rbuf } = q{};
+#        }
+#    );
+#
+#    $r->on_write(
+#}
 
 sub ae_handle_pipe
 {
@@ -162,10 +222,19 @@ sub io_or_die
     return $sub->( $h );
 }
 
-# bwrite - blocking write
+# bwrite - blocking write.
+# $h may be an AnyEvent::Handle or a scalar ref.
 sub bwrite
 {
     my ($h, @params) = @_;
+
+    if (ref($h) eq 'SCALAR') {
+        if (@params != 1) {
+            croak "internal error: bwrite with named parameters is incompatible with scalar ref";
+        }
+        $$h .= $params[0];
+        return;
+    }
 
     return io_or_die( $h, sub {
         shift->push_write( @params );

@@ -31,6 +31,13 @@ sub test_write_git_pkt
         is( $result[1], '0008test' );
     }
 
+    # write to buffer
+    {
+        my $buf;
+        write_git_pkt( \$buf, 'test2' );
+        is( $buf, '0009test2' );
+    }
+
     # flush pkt
     {
         write_git_pkt( $w );

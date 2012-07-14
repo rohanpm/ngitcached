@@ -75,10 +75,11 @@ sub process_git_connection
     $pkt || die "unexpected flush pkt\n";
     write_git_pkt( $h, rewrite_capabilities( $pkt ) );
 
-    while ($pkt = read_git_pkt( $s_h )) {
-        write_git_pkt( $h, $pkt );
-    }
-    write_git_pkt( $h );
+    my $pump_client_to_server = pump( $h, $s_h );
+    my $pump_server_to_client = pump( $s_h, $h );
+
+    $pump_client_to_server->recv();
+    $pump_server_to_client->recv();
 
     return;
 }
