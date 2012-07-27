@@ -348,6 +348,9 @@ sub handle_http_get
         die { HTTP_BAD_REQUEST() => "$error, expect service=git-upload-pack" };
     }
 
+    my $remote_id = $uri->host() . $uri->path();
+    $remote_id =~ s{/info/refs\z}{};
+
     my $h_server = http_request_content_handle(
         GET => $request->uri(),
         headers => {
@@ -391,11 +394,29 @@ sub handle_http_get
     write_git_pkt( $h_client_git, rewrite_capabilities( $pkt ) );
 
     # Then read until next flush
+    my $server_refs = {};
     while (my $pkt = $read_git_pkt->()) {
         AE::log debug => "read ref: '$pkt'\n";
+        if (
+            $pkt =~ m{
+                \A
+                ([0-9a-f]{40})
+                [ ]
+                (refs/.+)
+                \n
+                \z
+            }xms
+        ) {
+            my ($sha1, $ref) = ($1, $2);
+            $server_refs->{ $ref } = $sha1;
+        }
         write_git_pkt( $h_client_git, $pkt );
     }
     write_git_pkt( $h_client_git );
+
+    AE::log debug => sub { "refs on $remote_id: " . Dumper( $server_refs ) };
+
+    $self->{ last_known_refs }{ $remote_id } = $server_refs;
 
     push_end( $h_client_git );
 
@@ -432,6 +453,17 @@ sub handle_http_post
     my ($self, $h, $request) = @_;
 
     AE::log trace => sub { 'incoming POST: ' . Dumper( $request ) };
+
+    my $uri = URI->new( $request->uri() );
+    if ($uri->path() !~ m{/git-upload-pack\Z}) {
+        die { HTTP_BAD_REQUEST() => 'only POST to git-upload-pack are supported' };
+    }
+
+    my $remote_id = $uri->host() . $uri->path();
+    $remote_id =~ s{/git-upload-pack\Z}{};
+
+    my $remote_refs = $self->{ last_known_refs }{ $remote_id };
+    AE::log debug => sub { 'last known refs: '.Dumper( $remote_refs ) };
 
     my $h_postdata = handle_from_post_data( $h, $request );
 
