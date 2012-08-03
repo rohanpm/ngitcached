@@ -103,7 +103,7 @@ sub run_in_shell
 
     if (!exists $context{ sh }{ pid }) {
         my ($out_fh, $in_fh);
-        $context{ sh }{ pid } = open2( $out_fh, $in_fh, '/usr/bin/setsid', '/bin/sh', '-s' )
+        $context{ sh }{ pid } = open2( $out_fh, $in_fh, '/usr/bin/setsid', '/bin/bash', '-s' )
             || die "run sh: $!";
 
         my $oldfh = select $out_fh;
@@ -121,7 +121,7 @@ sub run_in_shell
 
     print $in_fh "$line >/dev/null\necho OK\n";
     my $sh_line = <$out_fh>;
-    ($sh_line && $sh_line eq "OK\n") || die "command $line failed";
+    ($sh_line && $sh_line eq "OK\n") || die "command $line failed: '$sh_line'";
 
     return %context;
 }
@@ -189,6 +189,7 @@ sub test_one_data
     if (exists $context{ sh }) {
         ok( close( $context{ sh }{ in_fh } ), 'sh close in OK' );
         ok( close( $context{ sh }{ out_fh } ), 'sh close out OK' );
+        kill( -15, $context{ sh }{ pid } );
         waitpid( $context{ sh }{ pid }, 0 );
     }
 

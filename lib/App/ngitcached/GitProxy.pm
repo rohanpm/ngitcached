@@ -64,14 +64,19 @@ sub process_git_connection
     my ($path, $s_host, $s_port) = ($1, split(/:/, $2, 2));
     $s_port //= 9418;
 
-    my $s_h = ae_handle(
-        "tcp connection to $s_host:$s_port on behalf of $host:$port",
-        connect => [$s_host, $s_port],
-        on_error => generic_handle_error_cb(),
-    );
-    write_git_pkt( $s_h, $service_pkt );
+    my $s_h;
+    my $pkt;
+    my $i = 0;
+    retry {
+        $s_h = ae_handle(
+            "tcp connection to $s_host:$s_port on behalf of $host:$port",
+            connect => [$s_host, $s_port],
+            on_error => generic_handle_error_cb(),
+        );
+        write_git_pkt( $s_h, $service_pkt );
+        $pkt = read_git_pkt( $s_h );
+    };
 
-    my $pkt = read_git_pkt( $s_h );
     $pkt || die "unexpected flush pkt\n";
     write_git_pkt( $h, rewrite_capabilities( $pkt ) );
 

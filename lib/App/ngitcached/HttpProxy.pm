@@ -122,8 +122,10 @@ sub http_request_content_handle
 
     # Once the reader is destroyed, we can also destroy the writer
     $r_h->{ ngitcached_kill_other_end } = guard {
-        $w_h->destroy();
-        undef $w_h;
+        if ($w_h) {
+            $w_h->destroy();
+            undef $w_h;
+        }
     };
 
     my $weak_r_h = $r_h;
@@ -233,7 +235,7 @@ sub http_response_content_handle
             bwrite( $h_http, $data );
         };
         if (my $error = $EVAL_ERROR) {
-            $cv->send( $error );
+            $cv->croak( $error );
         }
         return;
     };
@@ -242,10 +244,41 @@ sub http_response_content_handle
         AE::log trace => "http writing a chunk\n";
 
         my ($handle) = @_;
-        my $data = $handle->{rbuf};
-        $handle->{rbuf} = q{};
-        my $hexlen = sprintf( '%0x', length( $data ) );
-        $push_write->( "$hexlen\r\n$data\r\n" );
+        my $data = q{};
+
+        # if writing a git pkt, try to ensure a pkt is not
+        # broken across http chunks
+        my $pktlen;
+        while ($handle->{ rbuf }) {
+            if ($handle->{ rbuf } =~ m/\A([0-9a-fA-F]{4})/) {
+                $pktlen = hex( $1 );
+                AE::log trace => "http: chunk includes a git pkt of length 0x$1 / $pktlen";
+                my $buflen = length( $handle->{ rbuf } );
+                if ($buflen >= $pktlen) {
+                    my $append = substr( $handle->{ rbuf }, 0, $pktlen > 4 ? $pktlen : 4, q{} );
+                    AE::log trace => sub { "...appending to chunk: ".printable($append) };
+                    $data .= $append;
+                } else {
+                    AE::log trace => "...but http rbuf only has $buflen bytes";
+                    last;
+                }
+            } elsif (length($handle->{ rbuf }) >= 4) {
+                $data = $handle->{ rbuf };
+                $handle->{ rbuf } = q{};
+            } else {
+                last;
+            }
+        }
+
+        if ($data) {
+            my $hexlen = sprintf( '%0x', length( $data ) );
+            $push_write->( "$hexlen\r\n$data\r\n" );
+        } else {
+            AE::log trace => sub {
+                "http: not enough data for one chunk: need $pktlen, have "
+               .length( $handle->{ rbuf } );
+            };
+        }
     };
 
     my $write_response_cb = sub {
@@ -258,6 +291,7 @@ sub http_response_content_handle
 
     my $write_last_chunk = sub {
         AE::log trace => "http writing terminating chunk\n";
+        AE::log trace => sub { length( $r_h->{ rbuf } ) . ' bytes left in rbuf' };
 
         # Referring to $r_h in this callback ensures that the read end
         # of the pipe will not be destroyed until the write end closes
@@ -351,14 +385,28 @@ sub handle_http_get
     my $remote_id = $uri->host() . $uri->path();
     $remote_id =~ s{/info/refs\z}{};
 
-    my $h_server = http_request_content_handle(
-        GET => $request->uri(),
-        headers => {
-            'User-Agent' => $HTTP_USER_AGENT,
-            Pragma => 'no-cache',
-            Accept => '*/*',
-        },
-    );
+    my $h_server;
+    my $s_service;
+    my $read_git_pkt = sub {
+        return read_git_pkt( $h_server );
+    };
+
+    retry {
+        $h_server = http_request_content_handle(
+            GET => $request->uri(),
+            headers => {
+                'User-Agent' => $HTTP_USER_AGENT,
+                Pragma => 'no-cache',
+                Accept => '*/*',
+            },
+        );
+        AE::log debug => "Attempting to read first git pkt.\n";
+
+        # First line should be the service ...
+        $s_service = $read_git_pkt->();
+        AE::log debug => "read first packet: '$s_service'\n";
+    };
+
     my ($h_client_git, $response_cv) = http_response_content_handle(
         $h,
         headers => {
@@ -368,15 +416,6 @@ sub handle_http_get
         }
     );
 
-    my $read_git_pkt = sub {
-        return read_git_pkt( $h_server );
-    };
-
-    AE::log debug => "Attempting to read first git pkt.\n";
-
-    # First line should be the service ...
-    my $s_service = $read_git_pkt->();
-    AE::log debug => "read first packet: '$s_service'\n";
     write_git_pkt( $h_client_git, $s_service );
     chomp $s_service;
     if ($s_service ne '# service=git-upload-pack') {
@@ -510,7 +549,10 @@ sub handle_http_post
     );
 
     pump( $server_request_h, $h_client_git )->recv();
+
+    AE::log debug => 'waiting for response to drain...';
     $response_cv->recv();
+    AE::log debug => 'response fully written';
 
     return;
 }

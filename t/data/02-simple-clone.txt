@@ -9,6 +9,7 @@ out0: Listening on 11231 for http connections
 
 cd /
 git daemon --reuseaddr --export-all --port=10232 %TEMPDIR% &
+%TESTDIR%/simple-git-http-daemon --port=10233 --root=%TEMPDIR% &
 
 # Make a repo with a (1MB) commit
 git init %TEMPDIR%/repo1
@@ -22,6 +23,12 @@ COMMIT1=$(git rev-parse HEAD)
 cd %TEMPDIR%
 git clone --quiet git://127.0.0.1:10232%TEMPDIR%/repo1 repo2
 cd repo2
+[ $(git rev-parse HEAD) = $COMMIT1 ]
+
+# Again, via http proxy
+cd %TEMPDIR%
+http_proxy=127.0.0.1:11231 git clone --quiet http://127.0.0.1:10233/repo1 repo3
+cd repo3
 [ $(git rev-parse HEAD) = $COMMIT1 ]
 
 # Give the server a little bit of time for cleanup

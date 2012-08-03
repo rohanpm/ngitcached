@@ -7,9 +7,11 @@ use warnings;
 use AnyEvent::Handle;
 use Carp;
 use Const::Fast;
+use Coro::AnyEvent;
 use Coro;
 use English qw( -no_match_vars );
 use Guard;
+use Math::Fibonacci;
 
 use parent 'Exporter';
 
@@ -27,6 +29,7 @@ our @EXPORT = qw(
     read_client_have
     read_client_want
     read_git_pkt
+    retry
     rewrite_capabilities
     safe_hex
     write_git_pkt
@@ -42,10 +45,41 @@ const our %CAPABILITIES => map { $_ => 1 } qw(
 
 #==================== static ==================================================
 
+sub retry(&)
+{
+    my ($try_sub) = @_;
+
+    my $MAX = 20;
+    my $i = 0;
+
+    while (1) {
+        eval {
+            $try_sub->();
+            AE::log trace => "[attempt $i] succeeded";
+        };
+        if (my $error = $EVAL_ERROR) {
+            ++$i;
+            if ($i == $MAX) {
+                die $error;
+            }
+
+            my $sleep = Math::Fibonacci::term( $i );
+            AE::log warn => "[attempt $i - retry in $sleep] $error";
+            Coro::AnyEvent::sleep( $sleep );
+        } else {
+            last;
+        }
+    }
+
+    return;
+}
+
 sub printable
 {
     my ($data) = @_;
-    $data =~ s{[^\x01-x7f]}{.}g;
+    $data =~ s{\r}{\\r}g;
+    $data =~ s{\n}{\\n}g;
+    $data =~ s{([^\x20-\x7f])}{sprintf(qq{\\x%02x},ord($1))}ge;
     return $data;
 }
 
@@ -58,6 +92,9 @@ sub pump
     $from->on_error( generic_handle_error_cb( $cv ) );
     $to->on_error( generic_handle_error_cb( $cv ) );
 
+    my $from_name = $from->{ ngitcached_name } || '(unknown handle)';
+    my $to_name = $to->{ ngitcached_name } || '(unknown handle)';
+
     $from->on_read(
         sub {
             my ($h) = @_;
@@ -68,13 +105,13 @@ sub pump
 
     $from->on_eof(
         sub {
-            eval {
-                bshutdown( $to );
+            my ($h) = @_;
+            AE::log debug => "pump: $from_name EOF; shutdown $to_name";
+            eval { 
+                push_end( $to, sub { $cv->send() } );
             };
             if (my $error = $EVAL_ERROR) {
                 $cv->croak( $error );
-            } else{
-                $cv->send();
             }
         }
     );
@@ -116,7 +153,9 @@ sub generic_handle_error_cb
                 AE::log debug => "raising: $msg";
                 die $msg;
             }
-            AE::log debug => "coro $Coro::current->{ desc } sending to coro $coro->{ desc }: $msg";
+            AE::log debug => sub {
+                "coro $Coro::current->{ desc } sending to coro $coro->{ desc }: $msg"
+            };
             $coro->throw( $msg );
         } else {
             warn "Unexpected $msg\n  This may be a bug in ngitcached.\n";
@@ -207,7 +246,7 @@ sub bread
 
 sub io_or_die
 {
-    my ($h, $sub) = @_;
+    my ($h, $sub, @rest) = @_;
 
     my $guard = guard {
         $h->on_error( generic_handle_error_cb() );
@@ -219,7 +258,7 @@ sub io_or_die
         die "error on handle $name: $message\n";
     });
 
-    return $sub->( $h );
+    return $sub->( $h, @rest );
 }
 
 # bwrite - blocking write.
@@ -252,19 +291,23 @@ sub bshutdown
 # like push_shutdown, but close()s non-shutdownable fh
 sub push_end
 {
-    my ($h) = @_;
+    my ($h, $cb) = @_;
     delete $h->{ low_water_mark };
     $h->on_drain(sub {
         my $handle = shift;
+        my $name = $handle->{ ngitcached_name } || '(unknown handle)';
+        AE::log debug => "shutting down handle: $name";
         my $fh = $handle->fh();
         if (!shutdown( $fh, 1 )) {
             my $shutdown_error = $!;
             if (!close( $fh )) {
-                my $name = $handle->{ ngitcached_name } || '(unknown handle)';
                 warn "could not shutdown or close $name\n"
                     ."  shutdown: $shutdown_error\n"
                     ."  close: $!\n";
             }
+        }
+        if ($cb) {
+            $cb->();
         }
     });
 }
