@@ -13,6 +13,7 @@ use AnyEvent::HTTP qw();
 use AnyEvent::Handle;
 use AnyEvent::Socket;
 use Const::Fast;
+use Coro;
 use Data::Dumper;
 use English qw( -no_match_vars );
 use Guard;
@@ -28,7 +29,7 @@ const my $HTTP_USER_AGENT => "git/1.7.9.5 (ngitcached/$App::ngitcached::VERSION)
 
 our @EXPORT_OK = qw(
     http_request_content_handle
-    http_response_content_handle
+    http_response_content_channel
 );
 
 # Define own http_request for easy mocking
@@ -212,12 +213,11 @@ sub http_request_content_handle
     return $r_h;
 }
 
-sub http_response_content_handle
+sub http_response_content_channel
 {
     my ($h_http, %params) = @_;
     my $cv = AE::cv();
-
-    my ($r_h, $w_h) = ae_handle_pipe( '-> http response' );
+    my $channel = Coro::Channel->new( 200 );
 
     my %headers = %{ $params{ headers } || {} };
 
@@ -240,78 +240,46 @@ sub http_response_content_handle
         return;
     };
 
+    my $write_response_cb = sub {
+        AE::log trace => "http writing response headers\n";
+        $push_write->( $response->as_string("\r\n") );
+    };
+
     my $write_chunk_cb = sub {
         AE::log trace => "http writing a chunk\n";
 
-        my ($handle) = @_;
-        my $data = q{};
-
-        # if writing a git pkt, try to ensure a pkt is not
-        # broken across http chunks
-        my $pktlen;
-        while ($handle->{ rbuf }) {
-            if ($handle->{ rbuf } =~ m/\A([0-9a-fA-F]{4})/) {
-                $pktlen = hex( $1 );
-                AE::log trace => "http: chunk includes a git pkt of length 0x$1 / $pktlen";
-                my $buflen = length( $handle->{ rbuf } );
-                if ($buflen >= $pktlen) {
-                    my $append = substr( $handle->{ rbuf }, 0, $pktlen > 4 ? $pktlen : 4, q{} );
-                    AE::log trace => sub { "...appending to chunk: ".printable($append) };
-                    $data .= $append;
-                } else {
-                    AE::log trace => "...but http rbuf only has $buflen bytes";
-                    last;
-                }
-            } elsif (length($handle->{ rbuf }) >= 4) {
-                $data = $handle->{ rbuf };
-                $handle->{ rbuf } = q{};
-            } else {
-                last;
-            }
-        }
-
-        if ($data) {
-            my $hexlen = sprintf( '%0x', length( $data ) );
-            $push_write->( "$hexlen\r\n$data\r\n" );
-        } else {
-            AE::log trace => sub {
-                "http: not enough data for one chunk: need $pktlen, have "
-               .length( $handle->{ rbuf } );
-            };
-        }
-    };
-
-    my $write_response_cb = sub {
-        AE::log trace => "http writing response headers\n";
-
-        my ($handle) = @_;
-        $push_write->( $response->as_string("\r\n") );
-        $handle->on_read( $write_chunk_cb );
+        my ($data) = @_;
+        my $hexlen = sprintf( '%0x', length( $data ) );
+        $push_write->( "$hexlen\r\n$data\r\n" );
     };
 
     my $write_last_chunk = sub {
         AE::log trace => "http writing terminating chunk\n";
-        AE::log trace => sub { length( $r_h->{ rbuf } ) . ' bytes left in rbuf' };
-
-        # Referring to $r_h in this callback ensures that the read end
-        # of the pipe will not be destroyed until the write end closes
-        # (or EOF caused somehow).
-        $r_h->destroy();
-        undef $r_h;
 
         $push_write->( "0\r\n\r\n" );
-        push_end( $h_http );
-
-        $cv->send();
+        push_end( $h_http, sub { $cv->send() } );
     };
 
-    $r_h->on_read( $write_response_cb );
-    $r_h->on_eof( $write_last_chunk );
+    async {
+        my $data;
+        my $cb;
+        $cb = sub {
+            $write_response_cb->();
+            $cb = $write_chunk_cb;
+            $cb->( @_ );
+        };
+        # wait until at least one piece of data...
+        while (defined($data = $channel->get())) {
+            # append any other data already in the queue
+            while ($channel->size()) {
+                $data .= $channel->get();
+            }
+            $cb->( $data );
+        }
+        $write_last_chunk->();
+    };
 
-    # The reading end should live as long as the writing end.
-    $w_h->{ ngitcached_other_pipe_end } = $r_h;
-
-    return ($w_h, $cv);
+    return ($channel, $cv);
 }
 
 sub protocol
@@ -407,7 +375,7 @@ sub handle_http_get
         AE::log debug => "read first packet: '$s_service'\n";
     };
 
-    my ($h_client_git, $response_cv) = http_response_content_handle(
+    my ($h_client_git, $response_cv) = http_response_content_channel(
         $h,
         headers => {
             'Content-Type' => 'application/x-git-upload-pack-advertisement',
@@ -539,7 +507,7 @@ sub handle_http_post
         },
     );
 
-    my ($h_client_git, $response_cv) = http_response_content_handle(
+    my ($h_client_git, $response_cv) = http_response_content_channel(
         $h,
         headers => {
             'Content-Type' => 'application/x-git-upload-pack-result',

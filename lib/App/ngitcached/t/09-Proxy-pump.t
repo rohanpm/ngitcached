@@ -1,6 +1,7 @@
 use strict;
 use warnings;
 
+use Coro;
 use Data::Dumper;
 use Test::Exception;
 use Test::More;
@@ -21,6 +22,26 @@ sub test_pump
 
         my $line = bread( $r2, 'line' );
         is( $line, 'hi there' );
+
+        # although data was sent, we didn't shutdown,
+        # so the cv should not be ready
+        ok( !$cv->ready() );
+
+        # after shutdown, recv() should work
+        bshutdown( $w1 );
+        $cv->recv();
+    }
+
+    # pump to channel
+    {
+        my ($r1, $w1) = ae_handle_pipe( 'cpipe1' );
+        my $channel = Coro::Channel->new( );
+
+        my $cv = pump( $r1, $channel );
+        $w1->push_write( "hi there\n" );
+
+        my $line = $channel->get();
+        is( $line, "hi there\n" );
 
         # although data was sent, we didn't shutdown,
         # so the cv should not be ready

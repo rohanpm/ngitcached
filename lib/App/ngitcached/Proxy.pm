@@ -90,15 +90,26 @@ sub pump
     my $cv = AE::cv();
 
     $from->on_error( generic_handle_error_cb( $cv ) );
-    $to->on_error( generic_handle_error_cb( $cv ) );
+
+    if ($to->can('on_error')) {
+        $to->on_error( generic_handle_error_cb( $cv ) );
+    }
 
     my $from_name = $from->{ ngitcached_name } || '(unknown handle)';
-    my $to_name = $to->{ ngitcached_name } || '(unknown handle)';
+    my $to_name = (ref($to) eq 'HASH' ? $to->{ ngitcached_name } : q{});
+    $to_name ||= '(unknown handle)';
+
+    my $push_write;
+    if ($to->isa( 'Coro::Channel' )) {
+        $push_write = sub { $to->put( @_ ) };
+    } else {
+        $push_write = sub { $to->push_write( @_ ) };
+    }
 
     $from->on_read(
         sub {
             my ($h) = @_;
-            $to->push_write( $h->{ rbuf } );
+            $push_write->( $h->{ rbuf } );
             $h->{ rbuf } = q{};
         }
     );
@@ -262,7 +273,7 @@ sub io_or_die
 }
 
 # bwrite - blocking write.
-# $h may be an AnyEvent::Handle or a scalar ref.
+# $h may be an AnyEvent::Handle, Coro::Channel or a scalar ref.
 sub bwrite
 {
     my ($h, @params) = @_;
@@ -272,6 +283,11 @@ sub bwrite
             croak "internal error: bwrite with named parameters is incompatible with scalar ref";
         }
         $$h .= $params[0];
+        return;
+    }
+
+    if ($h->isa( 'Coro::Channel')) {
+        $h->put( @params );
         return;
     }
 
@@ -292,6 +308,15 @@ sub bshutdown
 sub push_end
 {
     my ($h, $cb) = @_;
+
+    if ($h->isa( 'Coro::Channel' )) {
+        $h->shutdown();
+        if ($cb) {
+            $cb->();
+        }
+        return;
+    }
+
     delete $h->{ low_water_mark };
     $h->on_drain(sub {
         my $handle = shift;

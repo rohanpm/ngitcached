@@ -9,15 +9,15 @@ use Test::NoWarnings;
 
 use FindBin;
 use lib "$FindBin::Bin/../../..";
-use App::ngitcached::HttpProxy qw( http_response_content_handle );
+use App::ngitcached::HttpProxy qw( http_response_content_channel );
 use App::ngitcached::Proxy;
 
-sub test_http_response_content_handle
+sub test_http_response_content_channel
 {
     # basic success
     {
         my ($r_h, $w_h) = ae_handle_pipe( 'test pipe' );
-        my ($h_http, $cv) = http_response_content_handle(
+        my ($c_http, $cv) = http_response_content_channel(
             $w_h,
             headers => {
                 'Content-Type' => 'application/x-git-upload-pack-advertisement',
@@ -26,9 +26,9 @@ sub test_http_response_content_handle
             },
         );
 
-        $h_http->push_write( 'x' x 100000 );
-        $h_http->push_shutdown();
-
+        $c_http->put( 'x' x 100000 );
+        $c_http->shutdown();
+        
         my $result = bread( $r_h, regex => qr{\r\n\r\n} );
         my $headers = <<'END_HEADER';
 HTTP/1.1 200 OK
@@ -49,10 +49,6 @@ END_HEADER
         is( length( $result ), $length + 2 );
         is( $result, ('x' x $length) . "\r\n" );
 
-        # After the writer is undefined, the internal pipe write end is closed,
-        # causing 'broken pipe' here.
-        undef $h_http;
-
         throws_ok {
             while (bread( {in=>$r_h,timeout=>0.4}, regex => qr{\r\n} )) {
             }
@@ -65,7 +61,7 @@ END_HEADER
     # git pkt chunking
     {
         my ($r_h, $w_h) = ae_handle_pipe( 'test pipe' );
-        my ($h_http, $cv) = http_response_content_handle(
+        my ($c_http, $cv) = http_response_content_channel(
             $w_h,
             headers => {
                 'Content-Type' => 'application/x-git-upload-pack-advertisement',
@@ -74,17 +70,17 @@ END_HEADER
             },
         );
 
-        for my $i (1..5000) {
-            write_git_pkt( $h_http, "test pkt $i\n" );
+        for my $i (1..2500) {
+            write_git_pkt( $c_http, "test pkt $i\n" );
         }
-        undef $h_http;  # no more to write
+        $c_http->shutdown();
         $cv->recv();
 
         bread( $r_h, regex => qr{\r\n\r\n} );
 
         # read each git pkt from chunks ...
         my $i = 1;
-        while ($i <= 5000) {
+        while ($i <= 2500) {
             my $len = bread( $r_h, regex => qr{[0-9a-fA-F]+\r\n} );
             $len =~ s{\r\n}{};
             $len = hex($len);
@@ -110,5 +106,5 @@ END_HEADER
 }
 
 plan( 'no_plan' );
-test_http_response_content_handle();
+test_http_response_content_channel();
 
